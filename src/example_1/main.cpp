@@ -6,17 +6,21 @@
 using namespace ci;
 using namespace ci::app;
 
+
 #define WINDOW_WIDTH 1920
 #define WINDOW_HEIGHT 1080
-#define NPARTICLES 10
+#define NPARTICLES 500
 #define MAX_RADIUS 2.0f
 #define MIN_RADIUS 2.0f
-#define WALL_BOUNCE_FACTOR 0.3f
+#define MAX_VELOCITY 10.0f
+#define MIN_VELOCITY -10.0f
+#define WALL_BOUNCE_FACTOR 0.2f
 #define FORCE_FEILD_FACTOR 2.0f
 #define DT 0.9f
-#define GRID_RESOLUTION 100
+#define GRID_RESOLUTION 5
 #define DRAW_GRID false
 #define DRAW_PARTICLES false
+#define MESH_COLOR ColorA(0.0f, 0.0f, 0.0f, 0.05f)
 
 class Particle {
  public:
@@ -83,25 +87,25 @@ class Particle {
 class World {
  public:
   float dt;
-  int gridnRows;
-  int gridnCols;
+  int gridNumRows;
+  int gridNumCols;
   std::vector<std::vector<float>> grid;
   std::vector<Particle> particles;
 
   World() {
     dt = DT;
-    gridnRows = WINDOW_HEIGHT / GRID_RESOLUTION;
-    gridnCols = WINDOW_WIDTH / GRID_RESOLUTION;
-    grid = std::vector<std::vector<float>>(gridnRows,
-                                           std::vector<float>(gridnCols, 0.0f));
+    gridNumRows = WINDOW_HEIGHT / GRID_RESOLUTION;
+    gridNumCols = WINDOW_WIDTH / GRID_RESOLUTION;
+    grid = std::vector<std::vector<float>>(
+        gridNumRows, std::vector<float>(gridNumCols, 0.0f));
     particles = std::vector<Particle>();
   }
 
   void addParticle(const Particle &particle) { particles.push_back(particle); }
 
   void updateGrid(const vec2 &mousePos) {
-    for (int i = 0; i < gridnRows; ++i) {
-      for (int j = 0; j < gridnCols; ++j) {
+    for (int i = 0; i < gridNumRows; ++i) {
+      for (int j = 0; j < gridNumCols; ++j) {
         float x = static_cast<float>(j) * static_cast<float>(GRID_RESOLUTION);
         float y = static_cast<float>(i) * static_cast<float>(GRID_RESOLUTION);
 
@@ -116,12 +120,12 @@ class World {
           std::max(
               particles[i].position.y / static_cast<float>(GRID_RESOLUTION),
               0.0f),
-          static_cast<float>(gridnRows - 1)));
+          static_cast<float>(gridNumRows - 1)));
       int columnIndex = static_cast<int>(std::min(
           std::max(
               particles[i].position.x / static_cast<float>(GRID_RESOLUTION),
               0.0f),
-          static_cast<float>(gridnCols - 1)));
+          static_cast<float>(gridNumCols - 1)));
       float gridValue = grid[rowIndex][columnIndex];
       vec2 force = FORCE_FEILD_FACTOR * vec2(cos(gridValue), sin(gridValue));
       particles[i].updateVelocity(force, dt);
@@ -147,11 +151,10 @@ class CollisionApp : public App {
     setWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
 
     for (int i = 0; i < NPARTICLES; i++) {
-      float angle = randFloat(0, 2 * M_PI);
-      float x = WINDOW_WIDTH / 2 + 100 * sin(angle);
-      float y = 2 * WINDOW_HEIGHT / 4 + 100 * cos(angle);
-      float vx = randFloat(0, 0);
-      float vy = randFloat(0, 0);
+      float x = randFloat(0, WINDOW_WIDTH);
+      float y = randFloat(0, WINDOW_HEIGHT);
+      float vx = randFloat(MIN_VELOCITY, MAX_VELOCITY);
+      float vy = randFloat(MIN_VELOCITY, MAX_VELOCITY);
       float radius = randFloat(MIN_RADIUS, MAX_RADIUS);
       Color color = Color(1.0f, 1.0f, 1.0f);
       Particle particle = Particle(vec2(x, y), vec2(vx, vy), radius, color);
@@ -161,13 +164,26 @@ class CollisionApp : public App {
 
   void mouseMove(MouseEvent event) override { mousePos = event.getPos(); }
 
+  void keyDown(KeyEvent event) override {
+    if (event.getChar() == 'q' || event.getChar() == 'Q') {
+      quit();
+    }
+    else if (event.getChar() == 's' || event.getChar() == 'S')
+    {
+      writeImage("screenshot_" + std::to_string(frameNumber) + ".png", copyWindowSurface());
+      frameNumber++;
+
+    }
+  }
+
   void update() override { world.update(mousePos); }
 
   void draw() override {
-    gl::clear(Color::gray(0.1f));
+    gl::clear(Color(0.6f, 0.6f, 0.6f));
+
     if (DRAW_GRID) {
-      for (int i = 0; i < world.gridnRows; ++i) {
-        for (int j = 0; j < world.gridnCols; ++j) {
+      for (int i = 0; i < world.gridNumRows; ++i) {
+        for (int j = 0; j < world.gridNumCols; ++j) {
           float angle = world.grid[i][j];
           float y = static_cast<float>(i) * static_cast<float>(GRID_RESOLUTION);
           float x = static_cast<float>(j) * static_cast<float>(GRID_RESOLUTION);
@@ -190,7 +206,6 @@ class CollisionApp : public App {
       }
     }
 
-    gl::color(1.0f, 1.0f, 1.0f, 1.0f);
     if (world.particles.size() > 2) {
       // Create a TriMesh
       TriMesh::Format format = TriMesh::Format().positions(3);
@@ -213,6 +228,7 @@ class CollisionApp : public App {
       }
 
       // Draw the mesh
+      gl::color(MESH_COLOR);
       gl::enableAlphaBlending();
       gl::draw(mesh);
       gl::disableAlphaBlending();
@@ -222,8 +238,8 @@ class CollisionApp : public App {
  private:
   World world;
   vec2 mousePos;
+  int frameNumber = 0;
 };
-
 void prepareSettings(CollisionApp::Settings *settings) {
   settings->setResizable(false);
 }
