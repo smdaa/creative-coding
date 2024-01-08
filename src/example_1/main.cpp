@@ -20,6 +20,7 @@ using namespace ci::app;
 #define GRID_RESOLUTION 5
 #define DRAW_GRID false
 #define DRAW_PARTICLES false
+#define BG_COLOR Color(0.6f, 0.6f, 0.6f)
 #define MESH_COLOR ColorA(0.0f, 0.0f, 0.0f, 0.05f)
 
 class Particle {
@@ -179,7 +180,7 @@ class CollisionApp : public App {
   void update() override { world.update(mousePos); }
 
   void draw() override {
-    gl::clear(Color(0.6f, 0.6f, 0.6f));
+    gl::clear(BG_COLOR);
 
     if (DRAW_GRID) {
       for (int i = 0; i < world.gridNumRows; ++i) {
