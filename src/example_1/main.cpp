@@ -6,10 +6,9 @@
 using namespace ci;
 using namespace ci::app;
 
-
 #define WINDOW_WIDTH 1920
 #define WINDOW_HEIGHT 1080
-#define NPARTICLES 500
+#define NPARTICLES 100
 #define MAX_RADIUS 2.0f
 #define MIN_RADIUS 2.0f
 #define MAX_VELOCITY 10.0f
@@ -20,8 +19,15 @@ using namespace ci::app;
 #define GRID_RESOLUTION 5
 #define DRAW_GRID false
 #define DRAW_PARTICLES false
-#define BG_COLOR Color(0.6f, 0.6f, 0.6f)
-#define MESH_COLOR ColorA(0.0f, 0.0f, 0.0f, 0.05f)
+
+#define BG_COLOR ColorA(220.0 / 255.0, 242.0 / 255.0, 241.0 / 255.0)
+
+const ColorA PALETTE[] = {
+    ColorA(15.0 / 255.0, 16.0 / 255.0, 53.0 / 255.0, 0.5f),
+    ColorA(127.0 / 255.0, 199.0 / 255.0, 217.0 / 255.0, 0.5f),
+    ColorA(54.0 / 255.0, 84.0 / 255.0, 134.0 / 255.0, 0.5f),
+
+};
 
 class Particle {
  public:
@@ -168,12 +174,10 @@ class CollisionApp : public App {
   void keyDown(KeyEvent event) override {
     if (event.getChar() == 'q' || event.getChar() == 'Q') {
       quit();
-    }
-    else if (event.getChar() == 's' || event.getChar() == 'S')
-    {
-      writeImage("screenshot_" + std::to_string(frameNumber) + ".png", copyWindowSurface());
+    } else if (event.getChar() == 's' || event.getChar() == 'S') {
+      writeImage("screenshot_" + std::to_string(frameNumber) + ".png",
+                 copyWindowSurface());
       frameNumber++;
-
     }
   }
 
@@ -209,7 +213,7 @@ class CollisionApp : public App {
 
     if (world.particles.size() > 2) {
       // Create a TriMesh
-      TriMesh::Format format = TriMesh::Format().positions(3);
+      TriMesh::Format format = TriMesh::Format().positions(3).colors(4);
       TriMesh mesh(format);
 
       // Extrude the path
@@ -222,6 +226,13 @@ class CollisionApp : public App {
         mesh.appendPosition(position);
       }
 
+      // Add colors
+      size_t colorIndex = 0;
+      for (size_t i = 0; i < mesh.getNumVertices(); ++i) {
+        mesh.appendColorRgba(
+            PALETTE[colorIndex++ % (sizeof(PALETTE) / sizeof(PALETTE[0]))]);
+      }
+
       // Add triangles
       for (size_t i = 0; i < mesh.getNumVertices() - 4; i += 4) {
         mesh.appendTriangle(i, i + 2, i + 4);
@@ -229,7 +240,6 @@ class CollisionApp : public App {
       }
 
       // Draw the mesh
-      gl::color(MESH_COLOR);
       gl::enableAlphaBlending();
       gl::draw(mesh);
       gl::disableAlphaBlending();
