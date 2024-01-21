@@ -152,7 +152,7 @@ class World {
   }
 };
 
-class CollisionApp : public App {
+class SmokeApp : public App {
  public:
   void setup() override {
     setWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
@@ -251,8 +251,8 @@ class CollisionApp : public App {
   vec2 mousePos;
   int frameNumber = 0;
 };
-void prepareSettings(CollisionApp::Settings *settings) {
+void prepareSettings(SmokeApp::Settings *settings) {
   settings->setResizable(false);
 }
 
-CINDER_APP(CollisionApp, RendererGl, prepareSettings)
+CINDER_APP(SmokeApp, RendererGl, prepareSettings)
