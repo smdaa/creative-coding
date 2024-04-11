@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(creative-coding)
 
+set(MPG123_INCLUDE_DIR /usr/include/x86_64-linux-gnu)
+
 # Add Cinder as a submodule
 add_subdirectory(extern/Cinder)
 
