@@ -15,7 +15,7 @@ using namespace ci::app;
 // We'll create a new Cinder Application by deriving from the App class.
 class BasicApp : public App
 {
-public:
+  public:
     // Cinder will call 'mouseDrag' when the user moves the mouse while holding one of its buttons.
     // See also: mouseMove, mouseDown, mouseUp and mouseWheel.
     void mouseDrag(MouseEvent event) override;
@@ -27,7 +27,7 @@ public:
     // Cinder will call 'draw' each time the contents of the window need to be redrawn.
     void draw() override;
 
-private:
+  private:
     // This will maintain a list of points which we will draw line segments between
     std::vector<vec2> mPoints;
 };
