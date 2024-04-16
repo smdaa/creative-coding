@@ -18,6 +18,127 @@ using namespace ci::app;
 #define GRID_RESOLUTION 10
 #define DT 0.1
 
+void addSource(std::vector<std::vector<float>> &targetGrid, const std::vector<std::vector<float>> &sourceGrid, float dt)
+{
+    size_t n = targetGrid.size();
+    size_t m = targetGrid[0].size();
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        for (size_t j = 0; j < m; ++j)
+        {
+            targetGrid[i][j] += dt * sourceGrid[i][j];
+        }
+    }
+}
+
+void setBoundary(int b, std::vector<std::vector<float>> &targetGrid)
+{
+    size_t n = targetGrid.size();
+    size_t m = targetGrid[0].size();
+
+    for (size_t i = 1; i < n - 1; i++)
+    {
+        targetGrid[i][0] = (b == 2) ? -targetGrid[i][1] : targetGrid[i][1];
+        targetGrid[i][m - 1] = (b == 2) ? -targetGrid[i][m - 2] : targetGrid[i][m - 2];
+    }
+
+    for (size_t j = 1; j < m - 1; j++)
+    {
+        targetGrid[0][j] = (b == 1) ? -targetGrid[1][j] : targetGrid[1][j];
+        targetGrid[n - 1][j] = (b == 1) ? -targetGrid[n - 2][j] : targetGrid[n - 2][j];
+    }
+
+    targetGrid[0][0] = 0.5 * (targetGrid[1][0] + targetGrid[0][1]);
+    targetGrid[0][m - 1] = 0.5 * (targetGrid[1][m - 1] + targetGrid[0][m - 2]);
+    targetGrid[n - 1][0] = 0.5 * (targetGrid[n - 1][1] + targetGrid[n - 2][0]);
+    targetGrid[n - 1][m - 1] = 0.5 * (targetGrid[n - 1][m - 2] + targetGrid[n - 2][m - 1]);
+}
+
+void diffuse(std::vector<std::vector<float>> &targetGrid, const std::vector<std::vector<float>> &targetGridOld,
+             size_t gaussSeidelIterations, float diffusionFactor, int b, float dt)
+{
+    size_t n = targetGrid.size();
+    size_t m = targetGrid[0].size();
+    float a = dt * diffusionFactor;
+
+    for (size_t k = 0; k < gaussSeidelIterations; ++k)
+    {
+        for (size_t i = 0; i < n; ++i)
+        {
+            for (size_t j = 0; j < m; ++j)
+            {
+                float sum = 0.0f;
+                sum += (i > 0) ? targetGridOld[i - 1][j] : 0.0f;     // Left
+                sum += (i < n - 1) ? targetGridOld[i + 1][j] : 0.0f; // Right
+                sum += (j > 0) ? targetGridOld[i][j - 1] : 0.0f;     // Up
+                sum += (j < m - 1) ? targetGridOld[i][j + 1] : 0.0f; // Down
+
+                targetGrid[i][j] = (targetGridOld[i][j] + a * sum) / (1 + 4 * a);
+            }
+        }
+        setBoundary(b, targetGrid);
+    }
+}
+
+void advect(std::vector<std::vector<float>> &densityGrid, const std::vector<std::vector<float>> &densityGridOld,
+            const std::vector<std::vector<float>> &velocityGridX, const std::vector<std::vector<float>> &velocityGridY,
+            int b, float dt)
+{
+    float x, y;
+
+    size_t n = densityGrid.size();
+    size_t m = densityGrid[0].size();
+
+    for (size_t i = 0; i < n; i++)
+    {
+        for (size_t j = 0; j < m; j++)
+        {
+            x = i - dt * velocityGridX[i][j];
+            y = j - dt * velocityGridY[i][j];
+            x = std::max(0.0f, std::min((float)n - 1.0f, x));
+            y = std::max(0.0f, std::min((float)m - 1.0f, y));
+
+            int x0 = (int)x;
+            int y0 = (int)y;
+            int x1 = std::min(x0 + 1, (int)n - 1);
+            int y1 = std::min(y0 + 1, (int)m - 1);
+
+            float sx1 = x - x0;
+            float sx0 = 1.0f - sx1;
+            float sy1 = y - y0;
+            float sy0 = 1.0f - sy1;
+
+            densityGrid[i][j] = sx0 * (sy0 * densityGridOld[x0][y0] + sy1 * densityGridOld[x0][y1]) +
+                                sx1 * (sy0 * densityGridOld[x1][y0] + sy1 * densityGridOld[x1][y1]);
+        }
+    }
+    setBoundary(b, densityGrid);
+}
+
+void densityStep(std::vector<std::vector<float>> &densityGrid, std::vector<std::vector<float>> &densityGridOld,
+                 const std::vector<std::vector<float>> &velocityGridX,
+                 const std::vector<std::vector<float>> &velocityGridY, float diffusion, float dt)
+{
+    addSource(densityGrid, densityGridOld, dt);
+    SWAP_GRIDS(densityGridOld, densityGrid);
+    diffuse(densityGrid, densityGridOld, 20, diffusion, 0, dt);
+    SWAP_GRIDS(densityGridOld, densityGrid);
+    advect(densityGrid, densityGridOld, velocityGridX, velocityGridY, 0, dt);
+}
+
+void velocityStep(std::vector<std::vector<float>> &velocityGridX, std::vector<std::vector<float>> &velocityGridY,
+                  std::vector<std::vector<float>> &velocityGridXOld, std::vector<std::vector<float>> &velocityGridYOld,
+                  float viscosityFactor, float dt)
+{
+    addSource(velocityGridX, velocityGridXOld, dt);
+    addSource(velocityGridY, velocityGridYOld, dt);
+    SWAP_GRIDS(velocityGridXOld, velocityGridX);
+    diffuse(velocityGridX, velocityGridXOld, 20, viscosityFactor, 1, dt);
+    SWAP_GRIDS(velocityGridYOld, velocityGridY);
+    diffuse(velocityGridY, velocityGridYOld, 20, viscosityFactor, 2, dt);
+}
+
 class SmokeApp : public App
 {
   public:
@@ -56,8 +177,8 @@ class SmokeApp : public App
 
     void update() override
     {
-        densityStep(densityGrid, densityGridOld, velocityGridX, velocityGridY, 1.0, DT);
-        // velocityStep(velocityGrid, velocityGridOld, 0.1, DT);
+        densityStep(densityGrid, densityGridOld, velocityGridX, velocityGridY, 0.1, DT);
+        velocityStep(velocityGridX, velocityGridY, velocityGridXOld, velocityGridYOld, 0.1, DT);
     }
 
     void draw() override
@@ -75,127 +196,6 @@ class SmokeApp : public App
     std::vector<std::vector<float>> velocityGridXOld;
     std::vector<std::vector<float>> velocityGridY;
     std::vector<std::vector<float>> velocityGridYOld;
-
-    void addSource(std::vector<std::vector<float>> &targetGrid, const std::vector<std::vector<float>> &sourceGrid,
-                   float dt)
-    {
-        size_t n = targetGrid.size();
-        size_t m = targetGrid[0].size();
-
-        for (size_t i = 0; i < n; ++i)
-        {
-            for (size_t j = 0; j < m; ++j)
-            {
-                targetGrid[i][j] += dt * sourceGrid[i][j];
-            }
-        }
-    }
-
-    void diffuse(std::vector<std::vector<float>> &targetGrid, const std::vector<std::vector<float>> &targetGridOld,
-                 size_t gaussSeidelIterations, float diffusionFactor, int b, float dt)
-    {
-        size_t n = targetGrid.size();
-        size_t m = targetGrid[0].size();
-
-        for (size_t k = 0; k < gaussSeidelIterations; ++k)
-        {
-            for (size_t i = 0; i < n; ++i)
-            {
-                for (size_t j = 0; j < m; ++j)
-                {
-                    float sum = 0.0f;
-                    sum += (i > 0) ? targetGridOld[i - 1][j] : 0.0f;     // Left
-                    sum += (i < n - 1) ? targetGridOld[i + 1][j] : 0.0f; // Right
-                    sum += (j > 0) ? targetGridOld[i][j - 1] : 0.0f;     // Up
-                    sum += (j < m - 1) ? targetGridOld[i][j + 1] : 0.0f; // Down
-
-                    targetGrid[i][j] =
-                        (targetGridOld[i][j] + dt * diffusionFactor * sum) / (1 + 4 * diffusionFactor * dt);
-                }
-            }
-            setBoundary(b, targetGrid);
-        }
-    }
-
-    void advect(std::vector<std::vector<float>> &densityGrid, const std::vector<std::vector<float>> &densityGridOld,
-                const std::vector<std::vector<float>> &velocityGridX,
-                const std::vector<std::vector<float>> &velocityGridY, int b, float dt)
-    {
-        float x, y;
-
-        size_t n = densityGrid.size();
-        size_t m = densityGrid[0].size();
-
-        for (size_t i = 0; i < n; i++)
-        {
-            for (size_t j = 0; j < m; j++)
-            {
-                x = i - dt * velocityGridX[i][j];
-                y = j - dt * velocityGridY[i][j];
-                x = std::max(0.0f, std::min((float)n - 1.0f, x));
-                y = std::max(0.0f, std::min((float)m - 1.0f, y));
-
-                int x0 = (int)x;
-                int y0 = (int)y;
-                int x1 = std::min(x0 + 1, (int)n - 1);
-                int y1 = std::min(y0 + 1, (int)m - 1);
-
-                float sx1 = x - x0;
-                float sx0 = 1.0f - sx1;
-                float sy1 = y - y0;
-                float sy0 = 1.0f - sy1;
-
-                densityGrid[i][j] = sx0 * (sy0 * densityGridOld[x0][y0] + sy1 * densityGridOld[x0][y1]) +
-                                    sx1 * (sy0 * densityGridOld[x1][y0] + sy1 * densityGridOld[x1][y1]);
-            }
-        }
-        setBoundary(b, densityGrid);
-    }
-
-    void setBoundary(int b, std::vector<std::vector<float>> &targetGrid)
-    {
-        size_t n = densityGrid.size();
-        size_t m = densityGrid[0].size();
-        for (size_t i = 1; i < n - 1; i++)
-        {
-            targetGrid[i][0] = (b == 2) ? -targetGrid[i][1] : targetGrid[i][1];
-            targetGrid[i][m - 1] = (b == 2) ? -targetGrid[i][m - 2] : targetGrid[i][m - 2];
-        }
-
-        for (size_t j = 1; j < m - 1; j++)
-        {
-            targetGrid[0][j] = (b == 1) ? -targetGrid[1][j] : targetGrid[1][j];
-            targetGrid[n - 1][j] = (b == 1) ? -targetGrid[n - 2][j] : targetGrid[n - 2][j];
-        }
-
-        targetGrid[0][0] = 0.5 * (targetGrid[1][0] + targetGrid[0][1]);
-        targetGrid[0][m - 1] = 0.5 * (targetGrid[1][m - 1] + targetGrid[0][m - 2]);
-        targetGrid[n - 1][0] = 0.5 * (targetGrid[n - 1][1] + targetGrid[n - 2][0]);
-        targetGrid[n - 1][m - 1] = 0.5 * (targetGrid[n - 1][m - 2] + targetGrid[n - 2][m - 1]);
-    }
-
-    void densityStep(std::vector<std::vector<float>> &densityGrid, std::vector<std::vector<float>> &densityGridOld,
-                     const std::vector<std::vector<float>> &velocityGridX,
-                     const std::vector<std::vector<float>> &velocityGridY, float diffusion, float dt)
-    {
-        addSource(densityGrid, densityGridOld, dt);
-        SWAP_GRIDS(densityGridOld, densityGrid);
-        diffuse(densityGrid, densityGridOld, 20, diffusion, 0, dt);
-        SWAP_GRIDS(densityGridOld, densityGrid);
-        advect(densityGrid, densityGridOld, velocityGridX, velocityGridY, 0, dt);
-    }
-
-    void velocityStep(std::vector<std::vector<float>> velocityGridX, std::vector<std::vector<float>> velocityGridY,
-                      std::vector<std::vector<float>> velocityGridXOld,
-                      std::vector<std::vector<float>> velocityGridYOld, float viscosityFactor, float dt)
-    {
-        addSource(velocityGridX, velocityGridXOld, dt);
-        addSource(velocityGridY, velocityGridYOld, dt);
-        SWAP_GRIDS(velocityGridXOld, velocityGridX);
-        diffuse(velocityGridX, velocityGridXOld, 20, viscosityFactor, 1, dt);
-        SWAP_GRIDS(velocityGridYOld, velocityGridY);
-        diffuse(velocityGridY, velocityGridYOld, 20, viscosityFactor, 2, dt);
-    }
 
     /*
     ***************************
