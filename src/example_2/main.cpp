@@ -1,278 +1,324 @@
 #include "cinder/app/App.h"
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
+#include <iostream>
+#include <vector>
 
+using namespace std;
 using namespace ci;
 using namespace ci::app;
 
-#define SWAP_GRIDS(grid, gridOld)                                                                                      \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        auto temp = grid;                                                                                              \
-        grid = gridOld;                                                                                                \
-        gridOld = temp;                                                                                                \
-    } while (0)
-#define WINDOW_WIDTH 1000
-#define WINDOW_HEIGHT 1000
-#define BG_COLOR ColorA(0.0f, 0.0f, 0.0f)
+#define WINDOW_WIDTH 1920
+#define WINDOW_HEIGHT 1080
 #define GRID_RESOLUTION 10
-#define DT 0.1
+#define DIFFUSIONFACTOR 0.0001f
+#define VISCOSITYFACTOR 0.0001f
+#define TIMESTEP 0.01f
 
-void addSource(std::vector<std::vector<float>> &targetGrid, const std::vector<std::vector<float>> &sourceGrid, float dt)
-{
+class SmokeApp : public App {
+public:
+  void setup() override {
+    setWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+    initDensity(WINDOW_WIDTH, WINDOW_HEIGHT, GRID_RESOLUTION);
+    initVelocity(WINDOW_WIDTH, WINDOW_HEIGHT, GRID_RESOLUTION);
+
+    getWindow()->getSignalMouseDown().connect(
+        [this](MouseEvent event) { onMouseDown(event); });
+
+    getWindow()->getSignalMouseDrag().connect(
+        [this](MouseEvent event) { onMouseDrag(event); });
+
+    getWindow()->getSignalMouseUp().connect(
+        [this](MouseEvent event) { onMouseUp(event); });
+  }
+
+  void update() override {
+    clearOldGrids();
+    stepDensity(DIFFUSIONFACTOR, TIMESTEP);
+    stepVelocity(VISCOSITYFACTOR, TIMESTEP);
+  }
+
+  void draw() override {
+    gl::clear(Color(0, 0, 0));
+
+    drawDensity();
+  }
+
+private:
+  vector<vector<float>> densityGrid;
+  vector<vector<float>> densityGridOld;
+  vector<vector<float>> velocityGridX;
+  vector<vector<float>> velocityGridXOld;
+  vector<vector<float>> velocityGridY;
+  vector<vector<float>> velocityGridYOld;
+
+  vec2 lastMousePositon;
+
+  void initDensity(int windowWidth, int windowHeight, int gridResolution) {
+    int gridNumRows = windowHeight / gridResolution;
+    int gridNumCols = windowWidth / gridResolution;
+
+    densityGrid.resize(gridNumRows, vector<float>(gridNumCols, 0.0f));
+    densityGridOld.resize(gridNumRows, vector<float>(gridNumCols, 0.0f));
+
+    float initialDensityValue = 1.0f / (gridNumRows * gridNumCols);
+
+    for (size_t i = 0; i < gridNumRows; ++i) {
+      for (size_t j = 0; j < gridNumCols; ++j) {
+        densityGrid[i][j] = initialDensityValue;
+        densityGridOld[i][j] = initialDensityValue;
+      }
+    }
+  }
+
+  void initVelocity(int windowWidth, int windowHeight, int gridResolution) {
+    int gridNumRows = windowHeight / gridResolution;
+    int gridNumCols = windowWidth / gridResolution;
+
+    velocityGridX.resize(gridNumRows, vector<float>(gridNumCols, 0.0f));
+    velocityGridXOld.resize(gridNumRows, vector<float>(gridNumCols, 0.0f));
+    velocityGridY.resize(gridNumRows, vector<float>(gridNumCols, 0.0f));
+    velocityGridYOld.resize(gridNumRows, vector<float>(gridNumCols, 0.0f));
+
+    float initialVelocityX = 1.0f;
+    float initialVelocityY = 0.0f;
+
+    for (size_t i = 0; i < gridNumRows; ++i) {
+      for (size_t j = 0; j < gridNumCols; ++j) {
+        velocityGridX[i][j] = initialVelocityX;
+        velocityGridXOld[i][j] = initialVelocityX;
+        velocityGridY[i][j] = initialVelocityY;
+        velocityGridYOld[i][j] = initialVelocityY;
+      }
+    }
+  }
+
+  void clearGrid(vector<vector<float>> &targetGrid) {
+    size_t n = targetGrid.size();
+    size_t m = targetGrid[0].size();
+    for (size_t i = 0; i < n; ++i) {
+      for (size_t j = 0; j < m; ++j) {
+        targetGrid[i][j] = 0.0f;
+      }
+    }
+  }
+
+  void clearOldGrids() {
+    clearGrid(densityGridOld);
+    clearGrid(velocityGridXOld);
+    clearGrid(velocityGridYOld);
+  }
+
+  void addDensitySource(const vec2 &position) {
+    int gridX = position.x / GRID_RESOLUTION;
+    int gridY = position.y / GRID_RESOLUTION;
+
+    if (gridX >= 0 && gridX < densityGrid[0].size() && gridY >= 0 &&
+        gridY < densityGrid.size()) {
+      densityGrid[gridY][gridX] += 50.0f;
+    }
+  }
+
+  void addVelocitySource(const vec2 &position, const vec2 &direction) {
+    int gridX = position.x / GRID_RESOLUTION;
+    int gridY = position.y / GRID_RESOLUTION;
+
+    if (gridX >= 0 && gridX < densityGrid[0].size() && gridY >= 0 &&
+        gridY < densityGrid.size()) {
+      velocityGridX[gridY][gridX] += direction.x;
+      velocityGridY[gridY][gridX] += direction.y;
+    }
+  }
+
+  void onMouseDown(MouseEvent event) { lastMousePositon = event.getPos(); }
+
+  void onMouseDrag(MouseEvent event) {
+    vec2 currentMousePosition = event.getPos();
+    vec2 dragDirection = currentMousePosition - lastMousePositon;
+    addDensitySource(currentMousePosition);
+    addVelocitySource(currentMousePosition, dragDirection);
+    lastMousePositon = currentMousePosition;
+  }
+
+  void onMouseUp(MouseEvent event) { lastMousePositon = vec2(0, 0); }
+
+  void addSource(vector<vector<float>> &targetGrid,
+                 const vector<vector<float>> &sourceGrid, float timeStep) {
     size_t n = targetGrid.size();
     size_t m = targetGrid[0].size();
 
-    for (size_t i = 0; i < n; ++i)
-    {
-        for (size_t j = 0; j < m; ++j)
-        {
-            targetGrid[i][j] += dt * sourceGrid[i][j];
-        }
+    for (size_t i = 0; i < n; ++i) {
+      for (size_t j = 0; j < m; ++j) {
+        targetGrid[i][j] += timeStep * sourceGrid[i][j];
+      }
     }
-}
+  }
 
-void setBoundary(int b, std::vector<std::vector<float>> &targetGrid)
-{
+  void setBoundary(vector<vector<float>> &targetGrid, int b) {
     size_t n = targetGrid.size();
     size_t m = targetGrid[0].size();
 
-    for (size_t i = 1; i < n - 1; i++)
-    {
-        targetGrid[i][0] = (b == 2) ? -targetGrid[i][1] : targetGrid[i][1];
-        targetGrid[i][m - 1] = (b == 2) ? -targetGrid[i][m - 2] : targetGrid[i][m - 2];
+    for (size_t i = 1; i < n - 1; ++i) {
+      targetGrid[i][0] = (b == 2) ? -targetGrid[i][1] : targetGrid[i][1];
+      targetGrid[i][m - 1] =
+          (b == 2) ? -targetGrid[i][m - 2] : targetGrid[i][m - 2];
     }
 
-    for (size_t j = 1; j < m - 1; j++)
-    {
-        targetGrid[0][j] = (b == 1) ? -targetGrid[1][j] : targetGrid[1][j];
-        targetGrid[n - 1][j] = (b == 1) ? -targetGrid[n - 2][j] : targetGrid[n - 2][j];
+    for (size_t j = 1; j < m - 1; ++j) {
+      targetGrid[0][j] = (b == 1) ? -targetGrid[1][j] : targetGrid[1][j];
+      targetGrid[n - 1][j] =
+          (b == 1) ? -targetGrid[n - 2][j] : targetGrid[n - 2][j];
     }
 
     targetGrid[0][0] = 0.5 * (targetGrid[1][0] + targetGrid[0][1]);
     targetGrid[0][m - 1] = 0.5 * (targetGrid[1][m - 1] + targetGrid[0][m - 2]);
     targetGrid[n - 1][0] = 0.5 * (targetGrid[n - 1][1] + targetGrid[n - 2][0]);
-    targetGrid[n - 1][m - 1] = 0.5 * (targetGrid[n - 1][m - 2] + targetGrid[n - 2][m - 1]);
-}
+    targetGrid[n - 1][m - 1] =
+        0.5 * (targetGrid[n - 1][m - 2] + targetGrid[n - 2][m - 1]);
+  }
 
-void diffuse(std::vector<std::vector<float>> &targetGrid, const std::vector<std::vector<float>> &targetGridOld,
-             size_t gaussSeidelIterations, float diffusionFactor, int b, float dt)
-{
+  void diffuse(vector<vector<float>> &targetGrid,
+               const vector<vector<float>> &targetGridOld,
+               size_t gaussSeidelIterations, float diffusionFactor, int b,
+               float dt) {
     size_t n = targetGrid.size();
     size_t m = targetGrid[0].size();
-    float a = dt * diffusionFactor;
+    float a = dt * diffusionFactor * n * m;
 
-    for (size_t k = 0; k < gaussSeidelIterations; ++k)
-    {
-        for (size_t i = 0; i < n; ++i)
-        {
-            for (size_t j = 0; j < m; ++j)
-            {
-                float sum = 0.0f;
-                sum += (i > 0) ? targetGridOld[i - 1][j] : 0.0f;     // Left
-                sum += (i < n - 1) ? targetGridOld[i + 1][j] : 0.0f; // Right
-                sum += (j > 0) ? targetGridOld[i][j - 1] : 0.0f;     // Up
-                sum += (j < m - 1) ? targetGridOld[i][j + 1] : 0.0f; // Down
+    for (size_t k = 0; k < gaussSeidelIterations; ++k) {
+      for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < m; ++j) {
+          float sum = 0.0f;
+          sum += (i > 0) ? targetGridOld[i - 1][j] : 0.0f;     // Left
+          sum += (i < n - 1) ? targetGridOld[i + 1][j] : 0.0f; // Right
+          sum += (j > 0) ? targetGridOld[i][j - 1] : 0.0f;     // Up
+          sum += (j < m - 1) ? targetGridOld[i][j + 1] : 0.0f; // Down
 
-                targetGrid[i][j] = (targetGridOld[i][j] + a * sum) / (1 + 4 * a);
-            }
+          targetGrid[i][j] = (targetGridOld[i][j] + a * sum) / (1 + 4 * a);
         }
-        setBoundary(b, targetGrid);
+      }
+      setBoundary(targetGrid, b);
     }
-}
+  }
 
-void advect(std::vector<std::vector<float>> &densityGrid, const std::vector<std::vector<float>> &densityGridOld,
-            const std::vector<std::vector<float>> &velocityGridX, const std::vector<std::vector<float>> &velocityGridY,
-            int b, float dt)
-{
+  void advect(vector<vector<float>> &densityGrid,
+              const vector<vector<float>> &densityGridOld,
+              const vector<vector<float>> &velocityGridX,
+              const vector<vector<float>> &velocityGridY, int b, float dt) {
     float x, y;
 
     size_t n = densityGrid.size();
     size_t m = densityGrid[0].size();
 
-    for (size_t i = 0; i < n; i++)
-    {
-        for (size_t j = 0; j < m; j++)
-        {
-            x = i - dt * velocityGridX[i][j];
-            y = j - dt * velocityGridY[i][j];
-            x = std::max(0.0f, std::min((float)n - 1.0f, x));
-            y = std::max(0.0f, std::min((float)m - 1.0f, y));
+    float dtRatio = dt * (max(n, m) - 1);
 
-            int x0 = (int)x;
-            int y0 = (int)y;
-            int x1 = std::min(x0 + 1, (int)n - 1);
-            int y1 = std::min(y0 + 1, (int)m - 1);
+    for (size_t i = 0; i < n; ++i) {
+      for (size_t j = 0; j < m; ++j) {
+        x = i - dtRatio * velocityGridX[i][j];
+        y = j - dtRatio * velocityGridY[i][j];
+        x = std::max(0.5f, std::min((float)n - 1.5f, x));
+        y = std::max(0.5f, std::min((float)m - 1.5f, y));
 
-            float sx1 = x - x0;
-            float sx0 = 1.0f - sx1;
-            float sy1 = y - y0;
-            float sy0 = 1.0f - sy1;
+        int x0 = (int)x;
+        int y0 = (int)y;
+        int x1 = std::min(x0 + 1, (int)n - 1);
+        int y1 = std::min(y0 + 1, (int)m - 1);
 
-            densityGrid[i][j] = sx0 * (sy0 * densityGridOld[x0][y0] + sy1 * densityGridOld[x0][y1]) +
-                                sx1 * (sy0 * densityGridOld[x1][y0] + sy1 * densityGridOld[x1][y1]);
+        float sx1 = x - x0;
+        float sx0 = 1.0f - sx1;
+        float sy1 = y - y0;
+        float sy0 = 1.0f - sy1;
+
+        densityGrid[i][j] =
+            sx0 *
+                (sy0 * densityGridOld[x0][y0] + sy1 * densityGridOld[x0][y1]) +
+            sx1 * (sy0 * densityGridOld[x1][y0] + sy1 * densityGridOld[x1][y1]);
+      }
+    }
+    setBoundary(densityGrid, b);
+  }
+
+  void stepDensity(float diffusionFactor, float timeStep) {
+    addSource(densityGrid, densityGridOld, timeStep);
+    diffuse(densityGridOld, densityGrid, 20, diffusionFactor, 0, timeStep);
+    advect(densityGrid, densityGridOld, velocityGridX, velocityGridY, 0,
+           timeStep);
+  }
+
+  void project(vector<vector<float>> &velocityGridX,
+               vector<vector<float>> &velocityGridY, vector<vector<float>> &p,
+               vector<vector<float>> &div, size_t gaussSeidelIterations) {
+
+    size_t n = velocityGridX.size();
+    size_t m = velocityGridX[0].size();
+
+    for (size_t i = 1; i < n - 1; ++i) {
+      for (size_t j = 1; j < m - 1; ++j) {
+        div[i][j] = -0.5 * (velocityGridX[i + 1][j] - velocityGridX[i - 1][j] +
+                            velocityGridY[i][j + 1] - velocityGridY[i][j - 1]);
+        p[i][j] = 0.0;
+      }
+    }
+    setBoundary(div, 0);
+    setBoundary(p, 0);
+
+    for (size_t k = 0; k < gaussSeidelIterations; ++k) {
+      for (size_t i = 1; i < n - 1; ++i) {
+        for (size_t j = 1; j < m - 1; ++j) {
+          p[i][j] = (div[i][j] + p[i - 1][j] + p[i + 1][j] + p[i][j - 1] +
+                     p[i][j + 1]) /
+                    4;
         }
-    }
-    setBoundary(b, densityGrid);
-}
-
-void densityStep(std::vector<std::vector<float>> &densityGrid, std::vector<std::vector<float>> &densityGridOld,
-                 const std::vector<std::vector<float>> &velocityGridX,
-                 const std::vector<std::vector<float>> &velocityGridY, float diffusion, float dt)
-{
-    addSource(densityGrid, densityGridOld, dt);
-    SWAP_GRIDS(densityGridOld, densityGrid);
-    diffuse(densityGrid, densityGridOld, 20, diffusion, 0, dt);
-    SWAP_GRIDS(densityGridOld, densityGrid);
-    advect(densityGrid, densityGridOld, velocityGridX, velocityGridY, 0, dt);
-}
-
-void velocityStep(std::vector<std::vector<float>> &velocityGridX, std::vector<std::vector<float>> &velocityGridY,
-                  std::vector<std::vector<float>> &velocityGridXOld, std::vector<std::vector<float>> &velocityGridYOld,
-                  float viscosityFactor, float dt)
-{
-    addSource(velocityGridX, velocityGridXOld, dt);
-    addSource(velocityGridY, velocityGridYOld, dt);
-    SWAP_GRIDS(velocityGridXOld, velocityGridX);
-    diffuse(velocityGridX, velocityGridXOld, 20, viscosityFactor, 1, dt);
-    SWAP_GRIDS(velocityGridYOld, velocityGridY);
-    diffuse(velocityGridY, velocityGridYOld, 20, viscosityFactor, 2, dt);
-}
-
-class SmokeApp : public App
-{
-  public:
-    void setup() override
-    {
-        setWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
-
-        gridNumRows = WINDOW_HEIGHT / GRID_RESOLUTION;
-        gridNumCols = WINDOW_WIDTH / GRID_RESOLUTION;
-
-        densityGrid = std::vector<std::vector<float>>(gridNumRows, std::vector<float>(gridNumCols, 0.0f));
-        densityGridOld = std::vector<std::vector<float>>(gridNumRows, std::vector<float>(gridNumCols, 0.0f));
-        for (size_t i = 0; i < gridNumRows; i++)
-        {
-            for (size_t j = 0; j < gridNumCols; j++)
-            {
-                densityGridOld[i][j] = rand() / (float)RAND_MAX;
-            }
-        }
-
-        velocityGridX = std::vector<std::vector<float>>(gridNumRows, std::vector<float>(gridNumCols, 0.0f));
-        velocityGridY = std::vector<std::vector<float>>(gridNumRows, std::vector<float>(gridNumCols, 0.0f));
-
-        auto velocityFields = generateVelocityField(gridNumRows, gridNumCols, 0.5f);
-        velocityGridXOld = velocityFields.first;
-        velocityGridYOld = velocityFields.second;
+      }
+      setBoundary(p, 0);
     }
 
-    void keyDown(KeyEvent event) override
-    {
-        if (event.getChar() == 'q' || event.getChar() == 'Q')
-        {
-            quit();
-        }
+    for (size_t i = 1; i < n - 1; ++i) {
+      for (size_t j = 1; j < m - 1; ++j) {
+        velocityGridX[i][j] -= 0.5 * (p[i + 1][j] - p[i - 1][j]);
+        velocityGridY[i][j] -= 0.5 * (p[i][j + 1] - p[i][j - 1]);
+      }
     }
+    setBoundary(velocityGridX, 1);
+    setBoundary(velocityGridY, 2);
+  }
 
-    void update() override
-    {
-        densityStep(densityGrid, densityGridOld, velocityGridX, velocityGridY, 0.1, DT);
-        velocityStep(velocityGridX, velocityGridY, velocityGridXOld, velocityGridYOld, 0.1, DT);
+  void stepVelocity(float viscosityFactor, float timeStep) {
+    addSource(velocityGridX, velocityGridXOld, timeStep);
+    addSource(velocityGridY, velocityGridYOld, timeStep);
+    diffuse(velocityGridXOld, velocityGridX, 20, viscosityFactor, 1, timeStep);
+    diffuse(velocityGridYOld, velocityGridY, 20, viscosityFactor, 2, timeStep);
+    project(velocityGridXOld, velocityGridYOld, velocityGridX, velocityGridY,
+            20);
+    advect(velocityGridX, velocityGridXOld, velocityGridXOld, velocityGridYOld,
+           1, timeStep);
+    advect(velocityGridY, velocityGridYOld, velocityGridXOld, velocityGridYOld,
+           2, timeStep);
+    project(velocityGridX, velocityGridY, velocityGridXOld, velocityGridYOld,
+            20);
+  }
+
+  void drawDensity() {
+    float cellWidth = (float)getWindowWidth() / densityGrid[0].size();
+    float cellHeight = (float)getWindowHeight() / densityGrid.size();
+
+    for (size_t i = 0; i < densityGrid.size(); ++i) {
+      for (size_t j = 0; j < densityGrid[i].size(); ++j) {
+        float x = j * cellWidth;
+        float y = i * cellHeight;
+
+        float density = densityGrid[i][j];
+        ColorA color(1.0f, 1.0f, 1.0f, density);
+
+        gl::color(color);
+        gl::drawSolidRect(Rectf(x, y, x + cellWidth, y + cellHeight));
+      }
     }
-
-    void draw() override
-    {
-        gl::clear(BG_COLOR);
-        drawDensity();
-    }
-
-  private:
-    int gridNumRows;
-    int gridNumCols;
-    std::vector<std::vector<float>> densityGrid;
-    std::vector<std::vector<float>> densityGridOld;
-    std::vector<std::vector<float>> velocityGridX;
-    std::vector<std::vector<float>> velocityGridXOld;
-    std::vector<std::vector<float>> velocityGridY;
-    std::vector<std::vector<float>> velocityGridYOld;
-
-    /*
-    ***************************
-    * Temp functions          *
-    ***************************
-    */
-
-    std::pair<std::vector<std::vector<float>>, std::vector<std::vector<float>>> generateVelocityField(
-        int numRows, int numCols, float angularVelocity)
-    {
-        std::vector<std::vector<float>> velocityFieldX(numRows, std::vector<float>(numCols, 0.0f));
-        std::vector<std::vector<float>> velocityFieldY(numRows, std::vector<float>(numCols, 0.0f));
-
-        float centerX = numRows / 2.0f;
-        float centerY = numCols / 2.0f;
-
-        for (int i = 0; i < numRows; ++i)
-        {
-            for (int j = 0; j < numCols; ++j)
-            {
-                float dx = i - centerX;
-                float dy = j - centerY;
-
-                float angle = atan2(dy, dx);
-                float radius = sqrt(dx * dx + dy * dy);
-
-                // Rotate the angle
-                float newAngle = angle + angularVelocity;
-
-                // Calculate the velocity components
-                float velocityX = cos(newAngle) * radius;
-                float velocityY = sin(newAngle) * radius;
-
-                velocityFieldX[i][j] = velocityX;
-                velocityFieldY[i][j] = velocityY;
-            }
-        }
-
-        return {velocityFieldX, velocityFieldY};
-    }
-
-    void drawDensity()
-    {
-        // Set up drawing parameters
-        gl::color(ColorA(1.0f, 1.0f, 1.0f)); // White color for density
-        gl::enableAlphaBlending();
-
-        // Calculate cell size
-        float cellWidth = (float)getWindowWidth() / gridNumCols;
-        float cellHeight = (float)getWindowHeight() / gridNumRows;
-
-        // Draw each cell with its density value
-        for (int i = 0; i < gridNumRows; ++i)
-        {
-            for (int j = 0; j < gridNumCols; ++j)
-            {
-                // Calculate cell position
-                float x = j * cellWidth;
-                float y = i * cellHeight;
-
-                // Calculate density value as grayscale color
-                float density = densityGrid[i][j];
-                ColorA densityColor(density, density, density, density);
-
-                // Draw cell
-                gl::color(densityColor);
-                gl::drawSolidRect(Rectf(x, y, x + cellWidth, y + cellHeight));
-            }
-        }
-
-        gl::disableAlphaBlending();
-    }
+  }
 };
 
-void prepareSettings(SmokeApp::Settings *settings)
-{
-    settings->setResizable(false);
+void prepareSettings(SmokeApp::Settings *settings) {
+  settings->setResizable(false);
 }
 
 CINDER_APP(SmokeApp, RendererGl, prepareSettings)
