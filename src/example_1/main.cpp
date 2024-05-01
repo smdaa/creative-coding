@@ -152,7 +152,7 @@ public:
   }
 };
 
-class SmokeApp : public App {
+class ParticleApp : public App {
 public:
   void setup() override {
     setWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
@@ -251,8 +251,8 @@ private:
   vec2 mousePos;
   int frameNumber = 0;
 };
-void prepareSettings(SmokeApp::Settings *settings) {
+void prepareSettings(ParticleApp::Settings *settings) {
   settings->setResizable(false);
 }
 
-CINDER_APP(SmokeApp, RendererGl, prepareSettings)
+CINDER_APP(ParticleApp, RendererGl, prepareSettings)
