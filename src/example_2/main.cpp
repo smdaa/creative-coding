@@ -9,82 +9,55 @@ using namespace std;
 using namespace ci;
 using namespace ci::app;
 
-#define DEFAULT_WINDOW_WIDTH 1920
-#define DEFAULT_WINDOW_HEIGHT 1080
-#define DEFAULT_GRID_RESOLUTION 10
+#define DEFAULT_WINDOW_WIDTH 1280
+#define DEFAULT_WINDOW_HEIGHT 720
+#define DEFAULT_GRID_RESOLUTION 20
 #define DEFAULT_DIFFUSION_FACTOR 0.0001f
 #define DEFAULT_VISCOSITY_FACTOR 0.0001f
-#define DEFAULT_TIMESTEP 0.01f
+#define DEFAULT_TIMESTEP 0.1f
 
-class FluidGrid {
+const char *vertexShader = R"(
+            #version 150
 
-public:
-  int numRows;
-  int numColumns;
-  int cellWidth;
-  int cellHeight;
-  vector<vector<float>> densityGrid;
-  vector<vector<float>> velocityGridX;
-  vector<vector<float>> velocityGridY;
+            uniform mat4 ciModelViewProjection;
 
-  FluidGrid(int _numRows, int _numColumns, int _cellWidth, int _cellHeight)
-      : numRows(_numRows), numColumns(_numColumns), cellWidth(_cellWidth),
-        cellHeight(_cellHeight) {
-    densityGrid.resize(numRows);
-    velocityGridX.resize(numRows);
-    velocityGridY.resize(numRows);
-    for (int i = 0; i < numRows; ++i) {
-      densityGrid[i].resize(numColumns);
-      velocityGridX[i].resize(numColumns);
-      velocityGridY[i].resize(numColumns);
-      for (int j = 0; j < numColumns; ++j) {
-        densityGrid[i][j] = 0.0f;
-        velocityGridX[i][j] = 0.0f;
-        velocityGridY[i][j] = 0.0f;
-      }
-    }
-  }
+            in vec2 ciPosition;
+            out vec2 TexCoord;
 
-  void reset() {
+            void main() {
+                TexCoord = ciPosition;
+                gl_Position = ciModelViewProjection * vec4(ciPosition, 0.0, 1.0);
+            }
+        )";
+
+const char *fragmentShader = R"(
+            #version 150
+
+            in vec2 TexCoord;
+            out vec4 FragColor;
+
+            uniform sampler2D FluidGrid;
+            uniform vec2 GridSize;
+
+            void main() {
+                vec2 texCoord = TexCoord * GridSize;
+                float density = texture(FluidGrid, texCoord).r;
+                FragColor = vec4(1.0, 1.0, 1.0, density);
+            }
+        )";
+
+static void addSource(int numRows, int numColumns, vector<vector<float>> &grid,
+                      const vector<vector<float>> &sourceGrid, float timeStep) {
 #pragma omp parallel for
-    for (int i = 0; i < numRows; ++i) {
-      for (int j = 0; j < numColumns; ++j) {
-        densityGrid[i][j] = 0.0f;
-        velocityGridX[i][j] = 0.0f;
-        velocityGridY[i][j] = 0.0f;
-      }
+  for (int i = 0; i < numRows; ++i) {
+    for (int j = 0; j < numColumns; ++j) {
+      grid[i][j] += sourceGrid[i][j] * timeStep;
     }
   }
+}
 
-  void draw() const {
-    for (int i = 0; i < numRows; ++i) {
-      for (int j = 0; j < numColumns; ++j) {
-        float x = j * cellWidth;
-        float y = i * cellHeight;
-        float density = densityGrid[i][j];
-        ColorA color(1.0f, 1.0f, 1.0f, density);
-        gl::color(color);
-        gl::drawSolidRect(Rectf(x, y, x + cellWidth, y + cellHeight));
-      }
-    }
-  }
-
-  void increaseCellDensity(int i, int j, float value) {
-    if (i >= 0 && i < numRows && j >= 0 && j < numColumns) {
-      densityGrid[i][j] += value;
-    }
-  }
-
-  void increaseCellVelocity(int i, int j, float valueX, float valueY) {
-    if (i >= 0 && i < numRows && j >= 0 && j < numColumns) {
-      velocityGridX[i][j] += valueX;
-      velocityGridY[i][j] += valueY;
-    }
-  }
-};
-
-void setBounds(int numRows, int numColumns, vector<vector<float>> &grid,
-               int b) {
+static void setBounds(int numRows, int numColumns, vector<vector<float>> &grid,
+                      int b) {
 #pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     grid[i][0] = (b == 2) ? -grid[i][1] : grid[i][1];
@@ -105,9 +78,10 @@ void setBounds(int numRows, int numColumns, vector<vector<float>> &grid,
                                              grid[numRows - 2][numColumns - 1]);
 }
 
-void diffuse(int numRows, int numColumns, vector<vector<float>> &outGrid,
-             const vector<vector<float>> &inGrid, int gaussSeidelIterations,
-             float factor, int b, float timeStep) {
+static void diffuse(int numRows, int numColumns, vector<vector<float>> &outGrid,
+                    const vector<vector<float>> &inGrid,
+                    int gaussSeidelIterations, float factor, int b,
+                    float timeStep) {
   float a = timeStep * factor * numRows * numColumns;
   for (int k = 0; k < gaussSeidelIterations; ++k) {
 #pragma omp parallel for
@@ -125,10 +99,11 @@ void diffuse(int numRows, int numColumns, vector<vector<float>> &outGrid,
   }
 }
 
-void advect(int numRows, int numColumns, vector<vector<float>> &outGrid,
-            const vector<vector<float>> &inGrid,
-            const vector<vector<float>> &velocityGridX,
-            const vector<vector<float>> &velocityGridY, int b, float timeStep) {
+static void advect(int numRows, int numColumns, vector<vector<float>> &outGrid,
+                   const vector<vector<float>> &inGrid,
+                   const vector<vector<float>> &velocityGridX,
+                   const vector<vector<float>> &velocityGridY, int b,
+                   float timeStep) {
   float dtRatio = timeStep * (max(numRows, numColumns) - 1);
 #pragma omp parallel for
   for (int i = 0; i < numRows; ++i) {
@@ -153,9 +128,11 @@ void advect(int numRows, int numColumns, vector<vector<float>> &outGrid,
   setBounds(numRows, numColumns, outGrid, b);
 }
 
-void project(int numRows, int numColumns, vector<vector<float>> &velocityGridX,
-             vector<vector<float>> &velocityGridY, vector<vector<float>> &p,
-             vector<vector<float>> &div, int gaussSeidelIterations) {
+static void project(int numRows, int numColumns,
+                    vector<vector<float>> &velocityGridX,
+                    vector<vector<float>> &velocityGridY,
+                    vector<vector<float>> &p, vector<vector<float>> &div,
+                    int gaussSeidelIterations) {
 #pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     for (int j = 1; j < numColumns - 1; ++j) {
@@ -188,38 +165,115 @@ void project(int numRows, int numColumns, vector<vector<float>> &velocityGridX,
   setBounds(numRows, numColumns, velocityGridY, 2);
 }
 
-void stepDensity(int numRows, int numColumns,
-                 vector<vector<float>> &densityGrid,
-                 vector<vector<float>> &densityGridOld,
-                 const vector<vector<float>> &velocityGridX,
-                 const vector<vector<float>> &velocityGridY,
-                 int diffusionFactor, int gaussSeidelIterations,
-                 float timeStep) {
-  diffuse(numRows, numColumns, densityGridOld, densityGrid,
-          gaussSeidelIterations, diffusionFactor, 0, timeStep);
-  advect(numRows, numColumns, densityGrid, densityGridOld, velocityGridX,
-         velocityGridY, 0, timeStep);
-}
+class FluidGrid {
 
-void stepVelocity(int numRows, int numColumns,
-                  vector<vector<float>> &velocityGridX,
-                  vector<vector<float>> &velocityGridY,
-                  vector<vector<float>> &velocityGridXOld,
-                  vector<vector<float>> &velocityGridYOld, int viscosityFactor,
-                  int gaussSeidelIterations, float timeStep) {
-  diffuse(numRows, numColumns, velocityGridXOld, velocityGridX,
-          gaussSeidelIterations, viscosityFactor, 1, timeStep);
-  diffuse(numRows, numColumns, velocityGridYOld, velocityGridY,
-          gaussSeidelIterations, viscosityFactor, 2, timeStep);
-  project(numRows, numColumns, velocityGridXOld, velocityGridYOld,
-          velocityGridX, velocityGridY, 20);
-  advect(numRows, numColumns, velocityGridX, velocityGridXOld, velocityGridXOld,
-         velocityGridYOld, 1, timeStep);
-  advect(numRows, numColumns, velocityGridY, velocityGridYOld, velocityGridXOld,
-         velocityGridYOld, 2, timeStep);
-  project(numRows, numColumns, velocityGridX, velocityGridY, velocityGridXOld,
-          velocityGridYOld, 20);
-}
+public:
+  int numRows;
+  int numColumns;
+  vector<vector<float>> densityGrid;
+  vector<vector<float>> densityGridOld;
+  vector<vector<float>> velocityGridX;
+  vector<vector<float>> velocityGridXOld;
+  vector<vector<float>> velocityGridY;
+  vector<vector<float>> velocityGridYOld;
+  vector<vector<float>> densitySourceGrid;
+  vector<vector<float>> velocitySourceGridX;
+  vector<vector<float>> velocitySourceGridY;
+
+  FluidGrid(int _numRows, int _numColumns)
+      : numRows(_numRows), numColumns(_numColumns) {
+    densityGrid.resize(numRows);
+    densityGridOld.resize(numRows);
+    velocityGridX.resize(numRows);
+    velocityGridXOld.resize(numRows);
+    velocityGridY.resize(numRows);
+    velocityGridYOld.resize(numRows);
+    densitySourceGrid.resize(numRows);
+    velocitySourceGridX.resize(numRows);
+    velocitySourceGridY.resize(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      densityGrid[i].resize(numColumns);
+      densityGridOld[i].resize(numColumns);
+      velocityGridX[i].resize(numColumns);
+      velocityGridXOld[i].resize(numColumns);
+      velocityGridY[i].resize(numColumns);
+      velocityGridYOld[i].resize(numColumns);
+      densitySourceGrid[i].resize(numColumns);
+      velocitySourceGridX[i].resize(numColumns);
+      velocitySourceGridY[i].resize(numColumns);
+      for (int j = 0; j < numColumns; ++j) {
+        densityGrid[i][j] = 0.0f;
+        densityGridOld[i][j] = 0.0f;
+        velocityGridX[i][j] = 0.0f;
+        velocityGridXOld[i][j] = 0.0f;
+        velocityGridY[i][j] = 0.0f;
+        velocityGridYOld[i][j] = 0.0f;
+        densitySourceGrid[i][j] = 0.0f;
+        velocitySourceGridX[i][j] = 0.0f;
+        velocitySourceGridY[i][j] = 0.0f;
+      }
+    }
+  }
+
+  void resetGrids() {
+    for (int i = 0; i < numRows; ++i) {
+      for (int j = 0; j < numColumns; ++j) {
+        densityGrid[i][j] = 0.0f;
+        densityGridOld[i][j] = 0.0f;
+        velocityGridX[i][j] = 0.0f;
+        velocityGridXOld[i][j] = 0.0f;
+        velocityGridY[i][j] = 0.0f;
+        velocityGridYOld[i][j] = 0.0f;
+        densitySourceGrid[i][j] = 0.0f;
+        velocitySourceGridX[i][j] = 0.0f;
+        velocitySourceGridY[i][j] = 0.0f;
+      }
+    }
+  }
+
+  void stepDensity(int diffusionFactor, int gaussSeidelIterations,
+                   float timeStep) {
+    addSource(numRows, numColumns, densityGrid, densitySourceGrid, timeStep);
+    diffuse(numRows, numColumns, densityGridOld, densityGrid,
+            gaussSeidelIterations, diffusionFactor, 0, timeStep);
+    advect(numRows, numColumns, densityGrid, densityGridOld, velocityGridX,
+           velocityGridY, 0, timeStep);
+    for (int i = 0; i < numRows; ++i) {
+      for (int j = 0; j < numColumns; ++j) {
+        densitySourceGrid[i][j] = 0.0f;
+        densityGridOld[i][j] = 0.0f;
+      }
+    }
+  }
+
+  void stepVelocity(int viscosityFactor, int gaussSeidelIterations,
+                    float timeStep) {
+    addSource(numRows, numColumns, velocityGridX, velocitySourceGridX,
+              timeStep);
+    addSource(numRows, numColumns, velocityGridY, velocitySourceGridY,
+              timeStep);
+    diffuse(numRows, numColumns, velocityGridXOld, velocityGridX,
+            gaussSeidelIterations, viscosityFactor, 1, timeStep);
+    diffuse(numRows, numColumns, velocityGridYOld, velocityGridY,
+            gaussSeidelIterations, viscosityFactor, 2, timeStep);
+    project(numRows, numColumns, velocityGridXOld, velocityGridYOld,
+            velocityGridX, velocityGridY, 20);
+    advect(numRows, numColumns, velocityGridX, velocityGridXOld,
+           velocityGridXOld, velocityGridYOld, 1, timeStep);
+    advect(numRows, numColumns, velocityGridY, velocityGridYOld,
+           velocityGridXOld, velocityGridYOld, 2, timeStep);
+    project(numRows, numColumns, velocityGridX, velocityGridY, velocityGridXOld,
+            velocityGridYOld, 20);
+    for (int i = 0; i < numRows; ++i) {
+      for (int j = 0; j < numColumns; ++j) {
+        velocitySourceGridX[i][j] = 0.0f;
+        velocitySourceGridY[i][j] = 0.0f;
+        velocityGridXOld[i][j] = 0.0f;
+        velocityGridYOld[i][j] = 0.0f;
+      }
+    }
+  }
+};
 
 class FluidApp : public App {
 
@@ -233,7 +287,7 @@ public:
   float diffusionFactor;
   float viscosityFactor;
   FluidGrid fluidGrid;
-  FluidGrid fluidGridOld;
+  Font mFont;
 
   FluidApp()
       : numRows(DEFAULT_WINDOW_HEIGHT / DEFAULT_GRID_RESOLUTION),
@@ -241,29 +295,27 @@ public:
         gridResolution(DEFAULT_GRID_RESOLUTION), simulationPaused(false),
         timeStep(DEFAULT_TIMESTEP), diffusionFactor(DEFAULT_DIFFUSION_FACTOR),
         viscosityFactor(DEFAULT_VISCOSITY_FACTOR),
-        fluidGrid(numRows, numColumns, gridResolution, gridResolution),
-        fluidGridOld(numRows, numColumns, gridResolution, gridResolution) {}
+        fluidGrid(numRows, numColumns) {}
 
   void setup() override {
     setWindowSize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
-    ImGui::Initialize();
-
     getWindow()->getSignalMouseDown().connect(
         [this](MouseEvent event) { onMouseDown(event); });
-
     getWindow()->getSignalMouseDrag().connect(
         [this](MouseEvent event) { onMouseDrag(event); });
-
     getWindow()->getSignalMouseUp().connect(
         [this](MouseEvent event) { onMouseUp(event); });
+    ImGui::Initialize();
+    mFont = Font("Arial", 12);
   }
 
   void keyDown(KeyEvent event) override {
     if (event.getChar() == 'q' || event.getChar() == 'Q') {
       quit();
     } else if (event.getChar() == 'r' || event.getChar() == 'R') {
-      fluidGrid.reset();
-      fluidGridOld.reset();
+      fluidGrid.resetGrids();
+    } else if (event.getChar() == 'p' || event.getChar() == 'P') {
+      simulationPaused = !simulationPaused;
     }
   }
 
@@ -272,13 +324,16 @@ public:
   void onMouseDrag(MouseEvent event) {
     vec2 currentMousePosition = event.getPos();
     vec2 dragDirection = currentMousePosition - lastMousePositon;
-    fluidGrid.increaseCellDensity(currentMousePosition.y / gridResolution,
-                                  currentMousePosition.x / gridResolution,
-                                  50.0f * timeStep);
-    fluidGrid.increaseCellVelocity(currentMousePosition.y / gridResolution,
-                                   currentMousePosition.x / gridResolution,
-                                   dragDirection.x * timeStep,
-                                   dragDirection.y * timeStep);
+    auto &densitySourceGrid = fluidGrid.densitySourceGrid;
+    auto &velocitySourceGridX = fluidGrid.velocitySourceGridX;
+    auto &velocitySourceGridY = fluidGrid.velocitySourceGridY;
+    int i = currentMousePosition.y / gridResolution;
+    int j = currentMousePosition.x / gridResolution;
+    if (i >= 0 && i < numRows && j >= 0 && j < numColumns) {
+      densitySourceGrid[i][j] += 50.0f * timeStep;
+      velocitySourceGridX[i][j] += dragDirection.x * timeStep;
+      velocitySourceGridY[i][j] += dragDirection.y * timeStep;
+    }
   }
 
   void onMouseUp(MouseEvent event) { lastMousePositon = vec2(0, 0); }
@@ -286,43 +341,45 @@ public:
   void update() override {
     ImGui::Begin("Parameters");
     if (ImGui::Button("Clear")) {
-      fluidGrid.reset();
-      fluidGridOld.reset();
+      fluidGrid.resetGrids();
     }
     ImGui::Checkbox("Pause", &simulationPaused);
-    ImGui::SliderFloat("Time Step", &timeStep, 0.0001f, 0.1f);
+    ImGui::SliderFloat("Time Step", &timeStep, 0.1f, 0.5f);
     ImGui::SliderFloat("Diffusion Factor", &diffusionFactor, 0.0f, 10.0f);
     ImGui::SliderFloat("Viscosity Factor", &viscosityFactor, 0.0f, 10.0f);
     ImGui::End();
 
     if (!simulationPaused) {
-      fluidGridOld.reset();
-
-      auto &densityGridOld = fluidGridOld.densityGrid;
-      auto &densityGrid = fluidGrid.densityGrid;
-      auto &velocityGridXOld = fluidGridOld.velocityGridX;
-      auto &velocityGridX = fluidGrid.velocityGridX;
-      auto &velocityGridYOld = fluidGridOld.velocityGridY;
-      auto &velocityGridY = fluidGrid.velocityGridY;
-
-      stepDensity(numRows, numColumns, densityGrid, densityGridOld,
-                  velocityGridX, velocityGridY, diffusionFactor, 50, timeStep);
-
-      stepVelocity(numRows, numColumns, velocityGridX, velocityGridY,
-                   velocityGridXOld, velocityGridYOld, viscosityFactor, 50,
-                   timeStep);
+      fluidGrid.stepDensity(diffusionFactor, 50, timeStep);
+      fluidGrid.stepVelocity(viscosityFactor, 50, timeStep);
     }
   }
 
   void resize() override {
     numRows = getWindowHeight() / gridResolution;
     numColumns = getWindowWidth() / gridResolution;
-    fluidGrid = FluidGrid(numRows, numColumns, gridResolution, gridResolution);
-    fluidGridOld =
-        FluidGrid(numRows, numColumns, gridResolution, gridResolution);
+    fluidGrid = FluidGrid(numRows, numColumns);
   }
 
-  void draw() override { gl::clear(Color(0, 0, 0)); }
+  void draw() override {
+    gl::clear(Color(0, 0, 0));
+    float cellWidth = getWindowWidth() / static_cast<float>(numColumns);
+    float cellHeight = getWindowHeight() / static_cast<float>(numRows);
+
+    for (int i = 0; i < numRows; ++i) {
+      for (int j = 0; j < numColumns; ++j) {
+        float density = fluidGrid.densityGrid[i][j];
+        ColorA color(1.0f, 1.0f, 1.0f, density);
+        Rectf rect(j * cellWidth, i * cellHeight, (j + 1) * cellWidth,
+                   (i + 1) * cellHeight);
+        gl::color(color);
+        gl::drawSolidRect(rect);
+      }
+    }
+    gl::color(Color::white());
+    gl::drawString("FPS: " + to_string(getAverageFps()), vec2(10, 10),
+                   Color::white(), mFont);
+  }
 };
 
 void prepareSettings(FluidApp::Settings *settings) {
