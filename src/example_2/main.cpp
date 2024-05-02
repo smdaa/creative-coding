@@ -2,15 +2,15 @@
 #include "cinder/app/App.h"
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
-#include <glm/fwd.hpp>
+#include <omp.h>
 #include <vector>
 
 using namespace std;
 using namespace ci;
 using namespace ci::app;
 
-#define DEFAULT_WINDOW_WIDTH 500
-#define DEFAULT_WINDOW_HEIGHT 500
+#define DEFAULT_WINDOW_WIDTH 1920
+#define DEFAULT_WINDOW_HEIGHT 1080
 #define DEFAULT_GRID_RESOLUTION 10
 #define DEFAULT_DIFFUSION_FACTOR 0.0001f
 #define DEFAULT_VISCOSITY_FACTOR 0.0001f
@@ -46,6 +46,7 @@ public:
   }
 
   void reset() {
+#pragma omp parallel for
     for (int i = 0; i < numRows; ++i) {
       for (int j = 0; j < numColumns; ++j) {
         densityGrid[i][j] = 0.0f;
@@ -84,11 +85,13 @@ public:
 
 void setBounds(int numRows, int numColumns, vector<vector<float>> &grid,
                int b) {
+#pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     grid[i][0] = (b == 2) ? -grid[i][1] : grid[i][1];
     grid[i][numColumns - 1] =
         (b == 2) ? -grid[i][numColumns - 2] : grid[i][numColumns - 2];
   }
+#pragma omp parallel for
   for (int j = 1; j < numColumns - 1; ++j) {
     grid[0][j] = (b == 1) ? -grid[1][j] : grid[1][j];
     grid[numRows - 1][j] =
@@ -107,6 +110,7 @@ void diffuse(int numRows, int numColumns, vector<vector<float>> &outGrid,
              float factor, int b, float timeStep) {
   float a = timeStep * factor * numRows * numColumns;
   for (int k = 0; k < gaussSeidelIterations; ++k) {
+#pragma omp parallel for
     for (int i = 0; i < numRows; ++i) {
       for (int j = 0; j < numColumns; ++j) {
         float sum = 0.0f;
@@ -125,12 +129,12 @@ void advect(int numRows, int numColumns, vector<vector<float>> &outGrid,
             const vector<vector<float>> &inGrid,
             const vector<vector<float>> &velocityGridX,
             const vector<vector<float>> &velocityGridY, int b, float timeStep) {
-  float x, y;
   float dtRatio = timeStep * (max(numRows, numColumns) - 1);
+#pragma omp parallel for
   for (int i = 0; i < numRows; ++i) {
     for (int j = 0; j < numColumns; ++j) {
-      x = i - dtRatio * velocityGridX[i][j];
-      y = j - dtRatio * velocityGridY[i][j];
+      float x = i - dtRatio * velocityGridX[i][j];
+      float y = j - dtRatio * velocityGridY[i][j];
       x = std::max(0.5f, std::min(static_cast<float>(numRows) - 1.5f, x));
       y = std::max(0.5f, std::min(static_cast<float>(numColumns) - 1.5f, y));
       int x0 = (int)x;
@@ -141,8 +145,9 @@ void advect(int numRows, int numColumns, vector<vector<float>> &outGrid,
       float sx0 = 1.0f - sx1;
       float sy1 = y - y0;
       float sy0 = 1.0f - sy1;
-      outGrid[i][j] = sx0 * (sy0 * inGrid[x0][y0] + sy1 * inGrid[x0][y1]) +
-                      sx1 * (sy0 * inGrid[x1][y0] + sy1 * inGrid[x1][y1]);
+      float newValue = sx0 * (sy0 * inGrid[x0][y0] + sy1 * inGrid[x0][y1]) +
+                       sx1 * (sy0 * inGrid[x1][y0] + sy1 * inGrid[x1][y1]);
+      outGrid[i][j] = newValue;
     }
   }
   setBounds(numRows, numColumns, outGrid, b);
@@ -151,7 +156,7 @@ void advect(int numRows, int numColumns, vector<vector<float>> &outGrid,
 void project(int numRows, int numColumns, vector<vector<float>> &velocityGridX,
              vector<vector<float>> &velocityGridY, vector<vector<float>> &p,
              vector<vector<float>> &div, int gaussSeidelIterations) {
-
+#pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     for (int j = 1; j < numColumns - 1; ++j) {
       div[i][j] = -0.5 * (velocityGridX[i + 1][j] - velocityGridX[i - 1][j] +
@@ -162,6 +167,7 @@ void project(int numRows, int numColumns, vector<vector<float>> &velocityGridX,
   setBounds(numRows, numColumns, div, 0);
   setBounds(numRows, numColumns, p, 0);
   for (int k = 0; k < gaussSeidelIterations; ++k) {
+#pragma omp parallel for
     for (int i = 1; i < numRows - 1; ++i) {
       for (int j = 1; j < numColumns - 1; ++j) {
         p[i][j] = (div[i][j] + p[i - 1][j] + p[i + 1][j] + p[i][j - 1] +
@@ -171,6 +177,7 @@ void project(int numRows, int numColumns, vector<vector<float>> &velocityGridX,
     }
     setBounds(numRows, numColumns, p, 0);
   }
+#pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     for (int j = 1; j < numColumns - 1; ++j) {
       velocityGridX[i][j] -= 0.5 * (p[i + 1][j] - p[i - 1][j]);
@@ -214,7 +221,7 @@ void stepVelocity(int numRows, int numColumns,
           velocityGridYOld, 20);
 }
 
-class ParticleApp : public App {
+class FluidApp : public App {
 
 public:
   int numRows;
@@ -228,7 +235,7 @@ public:
   FluidGrid fluidGrid;
   FluidGrid fluidGridOld;
 
-  ParticleApp()
+  FluidApp()
       : numRows(DEFAULT_WINDOW_HEIGHT / DEFAULT_GRID_RESOLUTION),
         numColumns(DEFAULT_WINDOW_WIDTH / DEFAULT_GRID_RESOLUTION),
         gridResolution(DEFAULT_GRID_RESOLUTION), simulationPaused(false),
@@ -267,10 +274,11 @@ public:
     vec2 dragDirection = currentMousePosition - lastMousePositon;
     fluidGrid.increaseCellDensity(currentMousePosition.y / gridResolution,
                                   currentMousePosition.x / gridResolution,
-                                  5.0f);
+                                  50.0f * timeStep);
     fluidGrid.increaseCellVelocity(currentMousePosition.y / gridResolution,
                                    currentMousePosition.x / gridResolution,
-                                   dragDirection.x, dragDirection.y);
+                                   dragDirection.x * timeStep,
+                                   dragDirection.y * timeStep);
   }
 
   void onMouseUp(MouseEvent event) { lastMousePositon = vec2(0, 0); }
@@ -314,14 +322,11 @@ public:
         FluidGrid(numRows, numColumns, gridResolution, gridResolution);
   }
 
-  void draw() override {
-    gl::clear(Color(0, 0, 0));
-    fluidGrid.draw();
-  }
+  void draw() override { gl::clear(Color(0, 0, 0)); }
 };
 
-void prepareSettings(ParticleApp::Settings *settings) {
+void prepareSettings(FluidApp::Settings *settings) {
   settings->setResizable(true);
 }
 
-CINDER_APP(ParticleApp, RendererGl, prepareSettings)
+CINDER_APP(FluidApp, RendererGl, prepareSettings)

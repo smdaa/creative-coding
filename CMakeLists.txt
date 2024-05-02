@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(creative-coding)
 
-set(MPG123_INCLUDE_DIR /usr/include/x86_64-linux-gnu)
+find_package(OpenMP REQUIRED)
 
 # Add Cinder as a submodule
 add_subdirectory(extern/Cinder)
@@ -14,4 +14,4 @@ add_executable(example_2 src/example_2/main.cpp)
 # Link against Cinder library
 target_link_libraries(example_0 PUBLIC cinder)
 target_link_libraries(example_1 PUBLIC cinder)
-target_link_libraries(example_2 PUBLIC cinder)
+target_link_libraries(example_2 PUBLIC cinder OpenMP::OpenMP_CXX)
