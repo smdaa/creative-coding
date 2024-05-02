@@ -16,36 +16,6 @@ using namespace ci::app;
 #define DEFAULT_VISCOSITY_FACTOR 0.0001f
 #define DEFAULT_TIMESTEP 0.1f
 
-const char *vertexShader = R"(
-            #version 150
-
-            uniform mat4 ciModelViewProjection;
-
-            in vec2 ciPosition;
-            out vec2 TexCoord;
-
-            void main() {
-                TexCoord = ciPosition;
-                gl_Position = ciModelViewProjection * vec4(ciPosition, 0.0, 1.0);
-            }
-        )";
-
-const char *fragmentShader = R"(
-            #version 150
-
-            in vec2 TexCoord;
-            out vec4 FragColor;
-
-            uniform sampler2D FluidGrid;
-            uniform vec2 GridSize;
-
-            void main() {
-                vec2 texCoord = TexCoord * GridSize;
-                float density = texture(FluidGrid, texCoord).r;
-                FragColor = vec4(1.0, 1.0, 1.0, density);
-            }
-        )";
-
 static void addSource(int numRows, int numColumns, vector<vector<float>> &grid,
                       const vector<vector<float>> &sourceGrid, float timeStep) {
 #pragma omp parallel for
