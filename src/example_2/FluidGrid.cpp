@@ -146,36 +146,6 @@ FluidGrid::FluidGrid(int _numRows, int _numColumns, int _gridResolution)
       numRows, std::vector<float>(numColumns, 0.0f));
   velocitySourceGridY = std::vector<std::vector<float>>(
       numRows, std::vector<float>(numColumns, 0.0f));
-
-  std::vector<ci::vec2> positions;
-  std::vector<ci::ColorA> colors;
-  for (int i = 0; i < numRows; ++i) {
-    for (int j = 0; j < numColumns; ++j) {
-      float x0 = j * gridResolution;
-      float y0 = i * gridResolution;
-      float x1 = (j + 1) * gridResolution;
-      float y1 = (i + 1) * gridResolution;
-
-      positions.push_back(ci::vec2(x0, y0));
-      positions.push_back(ci::vec2(x1, y0));
-      positions.push_back(ci::vec2(x0, y1));
-
-      positions.push_back(ci::vec2(x1, y0));
-      positions.push_back(ci::vec2(x1, y1));
-      positions.push_back(ci::vec2(x0, y1));
-
-      for (int k = 0; k < 6; ++k) {
-        colors.push_back(ci::ColorA(1.0f, 1.0f, 1.0f, densityGrid[i][j]));
-      }
-    }
-  }
-
-  mesh = ci::gl::VboMesh::create(positions.size(), GL_TRIANGLES,
-                                 {ci::gl::VboMesh::Layout()
-                                      .attrib(ci::geom::POSITION, 2)
-                                      .attrib(ci::geom::COLOR, 4)});
-  mesh->bufferAttrib(ci::geom::POSITION, positions);
-  mesh->bufferAttrib(ci::geom::COLOR, colors);
 }
 
 void FluidGrid::stepDensity(int diffusionFactor, int gaussSeidelIterations,
@@ -214,17 +184,4 @@ void FluidGrid::stepVelocity(int viscosityFactor, int gaussSeidelIterations,
       numRows, std::vector<float>(numColumns, 0.0f));
   velocitySourceGridY = std::vector<std::vector<float>>(
       numRows, std::vector<float>(numColumns, 0.0f));
-}
-
-void FluidGrid::updateMesh() {
-  std::vector<ci::ColorA> colors;
-  for (int i = 0; i < numRows; ++i) {
-    for (int j = 0; j < numColumns; ++j) {
-      float density = densityGrid[i][j];
-      for (int k = 0; k < 6; ++k) {
-        colors.push_back(ci::ColorA(1.0, 1.0, 1.0, density));
-      }
-    }
-  }
-  mesh->bufferAttrib(ci::geom::COLOR, colors);
 }

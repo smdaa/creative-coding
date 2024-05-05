@@ -5,14 +5,16 @@
 #include "cinder/gl/gl.h"
 #include <vector>
 
-#define GAUSS_SEIDEL_ITERATIONS 20
+#define GAUSS_SEIDEL_ITERATIONS 30
 #define DEFAULT_WINDOW_WIDTH 1280
 #define DEFAULT_WINDOW_HEIGHT 720
-#define DEFAULT_GRID_RESOLUTION 5
+#define DEFAULT_GRID_RESOLUTION 10
 #define DEFAULT_DIFFUSION_FACTOR 0.0001f
 #define DEFAULT_VISCOSITY_FACTOR 0.0001f
 #define DEFAULT_SOURCE_VALUE 50.0f
 #define DEFAULT_TIMESTEP 0.05f
+#define BG_COLOR ci::Color(0.8f, 0.8f, 0.8f)
+#define FLUID_COLOR ci::Color(0.0f, 0.0f, 0.0f)
 
 struct FluidSource {
   int x;
@@ -22,25 +24,29 @@ struct FluidSource {
 };
 
 class FluidApp : public ci::app::App {
-
 public:
-  int numRows;
-  int numColumns;
-  int gridResolution;
-  bool simulationPaused;
-  ci::vec2 lastMousePositon;
-  float timeStep;
-  float diffusionFactor;
-  float viscosityFactor;
-  float sourceValue;
-  int sourceX;
-  int sourceY;
-  float sourceDensity;
-  float sourceVelocity;
-  std::vector<FluidSource> fluidSources;
-  FluidGrid fluidGrid;
+  int numRows = DEFAULT_WINDOW_HEIGHT / DEFAULT_GRID_RESOLUTION;
+  int numColumns = DEFAULT_WINDOW_WIDTH / DEFAULT_GRID_RESOLUTION;
+  int gridResolution = DEFAULT_GRID_RESOLUTION;
+  FluidGrid fluidGrid = FluidGrid(numRows, numColumns, gridResolution);
+  ci::gl::VboMeshRef mesh;
 
-  FluidApp();
+  float timeStep = DEFAULT_TIMESTEP;
+  float diffusionFactor = DEFAULT_DIFFUSION_FACTOR;
+  float viscosityFactor = DEFAULT_VISCOSITY_FACTOR;
+
+  bool simulationPaused = false;
+  ci::vec2 lastMousePositon = ci::vec2(0.0f, 0.0f);
+  float sourceValue = DEFAULT_SOURCE_VALUE;
+  int sourceX = DEFAULT_WINDOW_WIDTH / 2;
+  int sourceY = DEFAULT_WINDOW_HEIGHT / 2;
+  float sourceDensity = DEFAULT_SOURCE_VALUE;
+  float sourceVelocity = DEFAULT_SOURCE_VALUE;
+  std::vector<FluidSource> fluidSources;
+
+  void initMesh(int numRows, int numColumns, int gridResolution);
+  void updateMesh();
+  void setConstantFluidSource(const FluidSource &source);
 
   void setup() override;
   void keyDown(ci::app::KeyEvent event) override;
@@ -52,15 +58,66 @@ public:
   void draw() override;
 };
 
-FluidApp::FluidApp()
-    : numRows(DEFAULT_WINDOW_HEIGHT / DEFAULT_GRID_RESOLUTION),
-      numColumns(DEFAULT_WINDOW_WIDTH / DEFAULT_GRID_RESOLUTION),
-      gridResolution(DEFAULT_GRID_RESOLUTION), simulationPaused(false),
-      timeStep(DEFAULT_TIMESTEP), diffusionFactor(DEFAULT_DIFFUSION_FACTOR),
-      viscosityFactor(DEFAULT_VISCOSITY_FACTOR),
-      sourceValue(DEFAULT_SOURCE_VALUE), sourceX(DEFAULT_WINDOW_WIDTH / 2),
-      sourceY(DEFAULT_WINDOW_HEIGHT / 2), sourceDensity(10.0f),
-      sourceVelocity(10.0f), fluidGrid(numRows, numColumns, gridResolution) {}
+void FluidApp::initMesh(int numRows, int numColumns, int gridResolution) {
+  std::vector<ci::vec2> positions;
+  std::vector<ci::ColorA> colors;
+  for (int i = 0; i < numRows; ++i) {
+    for (int j = 0; j < numColumns; ++j) {
+      float x0 = j * gridResolution;
+      float y0 = i * gridResolution;
+      float x1 = (j + 1) * gridResolution;
+      float y1 = (i + 1) * gridResolution;
+
+      positions.push_back(ci::vec2(x0, y0));
+      positions.push_back(ci::vec2(x1, y0));
+      positions.push_back(ci::vec2(x0, y1));
+
+      positions.push_back(ci::vec2(x1, y0));
+      positions.push_back(ci::vec2(x1, y1));
+      positions.push_back(ci::vec2(x0, y1));
+
+      for (int k = 0; k < 6; ++k) {
+        colors.push_back(
+            ci::ColorA(1.0f, 1.0f, 1.0f, fluidGrid.densityGrid[i][j]));
+      }
+    }
+  }
+
+  mesh = ci::gl::VboMesh::create(positions.size(), GL_TRIANGLES,
+                                 {ci::gl::VboMesh::Layout()
+                                      .attrib(ci::geom::POSITION, 2)
+                                      .attrib(ci::geom::COLOR, 4)});
+  mesh->bufferAttrib(ci::geom::POSITION, positions);
+  mesh->bufferAttrib(ci::geom::COLOR, colors);
+}
+
+void FluidApp::updateMesh() {
+  std::vector<ci::ColorA> colors;
+  for (int i = 0; i < numRows; ++i) {
+    for (int j = 0; j < numColumns; ++j) {
+      float density = fluidGrid.densityGrid[i][j];
+      for (int k = 0; k < 6; ++k) {
+        colors.push_back(ci::ColorA(FLUID_COLOR, density));
+      }
+    }
+  }
+  mesh->bufferAttrib(ci::geom::COLOR, colors);
+}
+
+void FluidApp::setConstantFluidSource(const FluidSource &source) {
+  const std::vector<std::pair<int, int>> offsets = {{0, 0},  {-1, 0}, {1, 0},
+                                                    {0, -1}, {0, 1},  {-1, -1},
+                                                    {-1, 1}, {1, -1}, {1, 1}};
+  int i = std::min(source.y / gridResolution, numRows - 1);
+  int j = std::min(source.x / gridResolution, numColumns - 1);
+  for (auto &offset : offsets) {
+    int new_i = std::clamp(i + offset.first, 0, numRows - 1);
+    int new_j = std::clamp(j + offset.second, 0, numColumns - 1);
+    fluidGrid.densitySourceGrid[new_i][new_j] = source.density;
+    fluidGrid.velocitySourceGridX[new_i][new_j] = source.velocity;
+    fluidGrid.velocitySourceGridY[new_i][new_j] = source.velocity;
+  }
+}
 
 void FluidApp::keyDown(ci::app::KeyEvent event) {
   if (event.getChar() == 'q' || event.getChar() == 'Q') {
@@ -79,18 +136,14 @@ void FluidApp::onMouseDown(ci::app::MouseEvent event) {
 void FluidApp::onMouseDrag(ci::app::MouseEvent event) {
   ci::vec2 currentMousePosition = event.getPos();
   ci::vec2 dragDirection = currentMousePosition - lastMousePositon;
+
   int i = currentMousePosition.y / gridResolution;
   int j = currentMousePosition.x / gridResolution;
+
   if (i >= 0 && i < numRows && j >= 0 && j < numColumns) {
-    if (event.isLeftDown()) {
-      fluidGrid.densitySourceGrid[i][j] += sourceValue;
-      fluidGrid.velocitySourceGridX[i][j] += dragDirection.x;
-      fluidGrid.velocitySourceGridY[i][j] += dragDirection.y;
-    } else if (event.isRightDown()) {
-      fluidGrid.densitySourceGrid[i][j] -= sourceValue;
-      fluidGrid.velocitySourceGridX[i][j] -= dragDirection.x;
-      fluidGrid.velocitySourceGridY[i][j] -= dragDirection.y;
-    }
+    fluidGrid.densitySourceGrid[i][j] += sourceValue;
+    fluidGrid.velocitySourceGridX[i][j] += dragDirection.x;
+    fluidGrid.velocitySourceGridY[i][j] += dragDirection.y;
   }
 }
 
@@ -99,13 +152,14 @@ void FluidApp::onMouseUp(ci::app::MouseEvent event) {
 }
 
 void FluidApp::setup() {
+  initMesh(numRows, numColumns, gridResolution);
+  ImGui::Initialize();
   getWindow()->getSignalMouseDown().connect(
       [this](ci::app::MouseEvent event) { onMouseDown(event); });
   getWindow()->getSignalMouseDrag().connect(
       [this](ci::app::MouseEvent event) { onMouseDrag(event); });
   getWindow()->getSignalMouseUp().connect(
       [this](ci::app::MouseEvent event) { onMouseUp(event); });
-  ImGui::Initialize();
 }
 
 void FluidApp::update() {
@@ -118,102 +172,31 @@ void FluidApp::update() {
   ImGui::SliderFloat("Diffusion factor", &diffusionFactor, 0.0f, 10.0f);
   ImGui::SliderFloat("Viscosity factor", &viscosityFactor, 0.0f, 10.0f);
   ImGui::SliderFloat("Source value", &sourceValue, 10.0f, 100.0f);
-
   if (ImGui::BeginMenu("Add source")) {
     ImGui::InputInt("X", &sourceX);
     ImGui::InputInt("Y", &sourceY);
     ImGui::InputFloat("Density source Value", &sourceDensity);
     ImGui::InputFloat("Velocity source Value", &sourceVelocity);
     if (ImGui::Button("Add source")) {
-      FluidSource newSource;
-      newSource.x = sourceX;
-      newSource.y = sourceY;
-      newSource.density = sourceDensity;
-      newSource.velocity = sourceVelocity;
-      fluidSources.push_back(newSource);
+      fluidSources.push_back(
+          FluidSource{sourceX, sourceY, sourceDensity, sourceVelocity});
     }
     if (ImGui::Button("Pop source")) {
       if (fluidSources.size() > 0) {
         fluidSources.pop_back();
       }
     }
-
     ImGui::EndMenu();
   }
   ImGui::End();
 
   if (!simulationPaused) {
-
     for (int k = 0; k < fluidSources.size(); ++k) {
-      int i = std::min(fluidSources[k].y / gridResolution, numRows - 1);
-      int j = std::min(fluidSources[k].x / gridResolution, numColumns - 1);
-
-      fluidGrid.densitySourceGrid[i][j] = fluidSources[k].density;
-      fluidGrid.densitySourceGrid[std::max(0, i - 1)][j] =
-          fluidSources[k].density;
-      fluidGrid.densitySourceGrid[std::min(numRows - 1, i + 1)][j] =
-          fluidSources[k].density;
-      fluidGrid.densitySourceGrid[i][std::max(0, j - 1)] =
-          fluidSources[k].density;
-      fluidGrid.densitySourceGrid[i][std::min(numColumns - 1, j + 1)] =
-          fluidSources[k].density;
-      fluidGrid.densitySourceGrid[std::max(0, i - 1)][std::max(0, j - 1)] =
-          fluidSources[k].density;
-      fluidGrid.densitySourceGrid[std::max(0, i - 1)]
-                                 [std::min(numColumns - 1, j + 1)] =
-          fluidSources[k].density;
-      fluidGrid
-          .densitySourceGrid[std::min(numRows - 1, i + 1)][std::max(0, j - 1)] =
-          fluidSources[k].density;
-      fluidGrid.densitySourceGrid[std::min(numRows - 1, i + 1)]
-                                 [std::min(numColumns - 1, j + 1)] =
-          fluidSources[k].density;
-
-      fluidGrid.velocitySourceGridX[i][j] -= fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[std::max(0, i - 1)][j] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[std::min(numRows - 1, i + 1)][j] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[i][std::max(0, j - 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[i][std::min(numColumns - 1, j + 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[std::max(0, i - 1)][std::max(0, j - 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[std::max(0, i - 1)]
-                                   [std::min(numColumns - 1, j + 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[std::min(numRows - 1, i + 1)]
-                                   [std::max(0, j - 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridX[std::min(numRows - 1, i + 1)]
-                                   [std::min(numColumns - 1, j + 1)] +=
-          fluidSources[k].velocity;
-
-      fluidGrid.velocitySourceGridY[i][j] -= fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[std::max(0, i - 1)][j] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[std::min(numRows - 1, i + 1)][j] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[i][std::max(0, j - 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[i][std::min(numColumns - 1, j + 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[std::max(0, i - 1)][std::max(0, j - 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[std::max(0, i - 1)]
-                                   [std::min(numColumns - 1, j + 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[std::min(numRows - 1, i + 1)]
-                                   [std::max(0, j - 1)] +=
-          fluidSources[k].velocity;
-      fluidGrid.velocitySourceGridY[std::min(numRows - 1, i + 1)]
-                                   [std::min(numColumns - 1, j + 1)] +=
-          fluidSources[k].velocity;
+      setConstantFluidSource(fluidSources[k]);
     }
+
     fluidGrid.stepDensity(diffusionFactor, GAUSS_SEIDEL_ITERATIONS, timeStep);
     fluidGrid.stepVelocity(viscosityFactor, GAUSS_SEIDEL_ITERATIONS, timeStep);
-    fluidGrid.updateMesh();
   }
 }
 
@@ -221,12 +204,18 @@ void FluidApp::resize() {
   numRows = getWindowHeight() / gridResolution;
   numColumns = getWindowWidth() / gridResolution;
   fluidGrid = FluidGrid(numRows, numColumns, gridResolution);
+  sourceX = getWindowWidth() / 2;
+  sourceY = getWindowHeight() / 2;
+  fluidSources.clear();
+  initMesh(numRows, numColumns, gridResolution);
 }
 
 void FluidApp::draw() {
-  ci::gl::clear(ci::Color(0.0f, 0.0f, 0.0f));
-  ci::gl::draw(fluidGrid.mesh);
+  updateMesh();
+  ci::gl::clear(BG_COLOR);
+  ci::gl::draw(mesh);
 }
+
 void prepareSettings(FluidApp::Settings *settings) {
   settings->setResizable(true);
   settings->setMultiTouchEnabled(false);

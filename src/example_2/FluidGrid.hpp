@@ -2,7 +2,6 @@
 #ifndef FLUIDGRID_HPP
 #define FLUIDGRID_HPP
 
-#include "cinder/gl/gl.h"
 #include <omp.h>
 #include <vector>
 
@@ -21,7 +20,6 @@ public:
   std::vector<std::vector<float>> densitySourceGrid;
   std::vector<std::vector<float>> velocitySourceGridX;
   std::vector<std::vector<float>> velocitySourceGridY;
-  ci::gl::VboMeshRef mesh;
 
   FluidGrid(int _numRows, int _numColumns, int _gridResolution);
 
@@ -29,8 +27,6 @@ public:
                    float timeStep);
   void stepVelocity(int viscosityFactor, int gaussSeidelIterations,
                     float timeStep);
-
-  void updateMesh();
 };
 
 namespace FluidGridUtils {
