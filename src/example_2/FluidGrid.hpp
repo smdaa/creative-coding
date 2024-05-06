@@ -2,7 +2,7 @@
 #ifndef FLUIDGRID_HPP
 #define FLUIDGRID_HPP
 
-#include <omp.h>
+//#include <omp.h>
 #include <vector>
 
 class FluidGrid {

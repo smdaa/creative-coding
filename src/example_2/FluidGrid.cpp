@@ -6,7 +6,7 @@ void addSource(int numRows, int numColumns,
                std::vector<std::vector<float>> &grid,
                const std::vector<std::vector<float>> &sourceGrid,
                float timeStep) {
-#pragma omp parallel for
+//#pragma omp parallel for
   for (int i = 0; i < numRows; ++i) {
     for (int j = 0; j < numColumns; ++j) {
       grid[i][j] += sourceGrid[i][j] * timeStep;
@@ -16,13 +16,13 @@ void addSource(int numRows, int numColumns,
 
 void setBounds(int numRows, int numColumns,
                std::vector<std::vector<float>> &grid, int b) {
-#pragma omp parallel for
+//#pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     grid[i][0] = (b == 2) ? -grid[i][1] : grid[i][1];
     grid[i][numColumns - 1] =
         (b == 2) ? -grid[i][numColumns - 2] : grid[i][numColumns - 2];
   }
-#pragma omp parallel for
+//#pragma omp parallel for
   for (int j = 1; j < numColumns - 1; ++j) {
     grid[0][j] = (b == 1) ? -grid[1][j] : grid[1][j];
     grid[numRows - 1][j] =
@@ -43,7 +43,7 @@ void diffuse(int numRows, int numColumns,
   float a = timeStep * factor * numRows * numColumns;
   float denominator = 1 + 4 * a;
   for (int k = 0; k < gaussSeidelIterations; ++k) {
-#pragma omp parallel for
+//#pragma omp parallel for
     for (int i = 0; i < numRows; ++i) {
       for (int j = 0; j < numColumns; ++j) {
         float sum = 0.0f;
@@ -65,7 +65,7 @@ void advect(int numRows, int numColumns,
             const std::vector<std::vector<float>> &velocityGridY, int b,
             float timeStep) {
   float dtRatio = timeStep * (std::max(numRows, numColumns) - 1);
-#pragma omp parallel for
+//#pragma omp parallel for
   for (int i = 0; i < numRows; ++i) {
     for (int j = 0; j < numColumns; ++j) {
       float x = i - dtRatio * velocityGridX[i][j];
@@ -92,7 +92,7 @@ void project(int numRows, int numColumns,
              std::vector<std::vector<float>> &velocityGridY,
              std::vector<std::vector<float>> &p,
              std::vector<std::vector<float>> &div, int gaussSeidelIterations) {
-#pragma omp parallel for
+//#pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     for (int j = 1; j < numColumns - 1; ++j) {
       div[i][j] = -0.5 * (velocityGridX[i + 1][j] - velocityGridX[i - 1][j] +
@@ -103,7 +103,7 @@ void project(int numRows, int numColumns,
   setBounds(numRows, numColumns, div, 0);
   setBounds(numRows, numColumns, p, 0);
   for (int k = 0; k < gaussSeidelIterations; ++k) {
-#pragma omp parallel for
+//#pragma omp parallel for
     for (int i = 1; i < numRows - 1; ++i) {
       for (int j = 1; j < numColumns - 1; ++j) {
         p[i][j] = (div[i][j] + p[i - 1][j] + p[i + 1][j] + p[i][j - 1] +
@@ -113,7 +113,7 @@ void project(int numRows, int numColumns,
     }
     setBounds(numRows, numColumns, p, 0);
   }
-#pragma omp parallel for
+//#pragma omp parallel for
   for (int i = 1; i < numRows - 1; ++i) {
     for (int j = 1; j < numColumns - 1; ++j) {
       velocityGridX[i][j] -= 0.5 * (p[i + 1][j] - p[i - 1][j]);
