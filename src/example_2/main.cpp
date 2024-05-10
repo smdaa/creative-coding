@@ -5,48 +5,38 @@
 #include "cinder/gl/gl.h"
 #include <vector>
 
-#define GAUSS_SEIDEL_ITERATIONS 10
-#define DEFAULT_WINDOW_WIDTH 500
-#define DEFAULT_WINDOW_HEIGHT 500
-#define DEFAULT_GRID_RESOLUTION 100
-#define DEFAULT_DIFFUSION_FACTOR 0.0001f
-#define DEFAULT_VISCOSITY_FACTOR 0.0001f
-#define DEFAULT_SOURCE_VALUE 50.0f
-#define DEFAULT_TIMESTEP 0.05f
+#define GAUSS_SEIDEL_ITERATIONS 20
+#define WINDOW_WIDTH 1920
+#define WINDOW_HEIGHT 1080
+#define GRID_RESOLUTION 10
+#define DIFFUSION_FACTOR 0.001f
+#define VISCOSITY_FACTOR 0.001f
+#define SOURCE_VALUE 50.0f
+#define TIMESTEP 0.01f
 #define BG_COLOR ci::Color(0.8f, 0.8f, 0.8f)
 #define FLUID_COLOR ci::Color(0.0f, 0.0f, 0.0f)
 
-struct FluidSource {
-  int x;
-  int y;
-  float density;
-  float velocity;
-};
-
 class FluidApp : public ci::app::App {
 public:
-  int numRows = DEFAULT_WINDOW_HEIGHT / DEFAULT_GRID_RESOLUTION;
-  int numColumns = DEFAULT_WINDOW_WIDTH / DEFAULT_GRID_RESOLUTION;
-  int gridResolution = DEFAULT_GRID_RESOLUTION;
+  int numRows = WINDOW_HEIGHT / GRID_RESOLUTION;
+  int numColumns = WINDOW_WIDTH / GRID_RESOLUTION;
+  int gridResolution = GRID_RESOLUTION;
   FluidGrid fluidGrid = FluidGrid(numRows, numColumns, gridResolution);
-  ci::gl::VboMeshRef mesh;
+  ci::gl::VboMeshRef fluidMesh;
 
-  float timeStep = DEFAULT_TIMESTEP;
-  float diffusionFactor = DEFAULT_DIFFUSION_FACTOR;
-  float viscosityFactor = DEFAULT_VISCOSITY_FACTOR;
+  float timeStep = TIMESTEP;
+  float diffusionFactor = DIFFUSION_FACTOR;
+  float viscosityFactor = VISCOSITY_FACTOR;
 
   bool simulationPaused = false;
   ci::vec2 lastMousePositon = ci::vec2(0.0f, 0.0f);
-  float sourceValue = DEFAULT_SOURCE_VALUE;
-  int sourceX = DEFAULT_WINDOW_WIDTH / 2;
-  int sourceY = DEFAULT_WINDOW_HEIGHT / 2;
-  float sourceDensity = DEFAULT_SOURCE_VALUE;
-  float sourceVelocity = DEFAULT_SOURCE_VALUE;
-  std::vector<FluidSource> fluidSources;
+  int sourceX = WINDOW_WIDTH / 2;
+  int sourceY = WINDOW_HEIGHT / 2;
+  std::vector<ci::vec2> sourcesXY;
 
-  void initMesh(int numRows, int numColumns, int gridResolution);
+  void initMesh();
   void updateMesh();
-  void setConstantFluidSource(const FluidSource &source);
+  void setConstantFluidSource(int sourceX, int sourceY);
 
   void setup() override;
   void keyDown(ci::app::KeyEvent event) override;
@@ -54,11 +44,10 @@ public:
   void onMouseDrag(ci::app::MouseEvent event);
   void onMouseUp(ci::app::MouseEvent event);
   void update() override;
-  void resize() override;
   void draw() override;
 };
 
-void FluidApp::initMesh(int numRows, int numColumns, int gridResolution) {
+void FluidApp::initMesh() {
   std::vector<ci::vec2> positions;
   std::vector<ci::ColorA> colors;
   for (int i = 0; i < numRows; ++i) {
@@ -83,12 +72,12 @@ void FluidApp::initMesh(int numRows, int numColumns, int gridResolution) {
     }
   }
 
-  mesh = ci::gl::VboMesh::create(positions.size(), GL_TRIANGLES,
-                                 {ci::gl::VboMesh::Layout()
-                                      .attrib(ci::geom::POSITION, 2)
-                                      .attrib(ci::geom::COLOR, 4)});
-  mesh->bufferAttrib(ci::geom::POSITION, positions);
-  mesh->bufferAttrib(ci::geom::COLOR, colors);
+  fluidMesh = ci::gl::VboMesh::create(positions.size(), GL_TRIANGLES,
+                                      {ci::gl::VboMesh::Layout()
+                                           .attrib(ci::geom::POSITION, 2)
+                                           .attrib(ci::geom::COLOR, 4)});
+  fluidMesh->bufferAttrib(ci::geom::POSITION, positions);
+  fluidMesh->bufferAttrib(ci::geom::COLOR, colors);
 }
 
 void FluidApp::updateMesh() {
@@ -101,29 +90,40 @@ void FluidApp::updateMesh() {
       }
     }
   }
-  mesh->bufferAttrib(ci::geom::COLOR, colors);
+  fluidMesh->bufferAttrib(ci::geom::COLOR, colors);
 }
 
-void FluidApp::setConstantFluidSource(const FluidSource &source) {
+void FluidApp::setConstantFluidSource(int sourceX, int sourceY) {
   const std::vector<std::pair<int, int>> offsets = {{0, 0},  {-1, 0}, {1, 0},
                                                     {0, -1}, {0, 1},  {-1, -1},
                                                     {-1, 1}, {1, -1}, {1, 1}};
-  int i = std::min(source.y / gridResolution, numRows - 1);
-  int j = std::min(source.x / gridResolution, numColumns - 1);
+  int i = std::min(sourceY / gridResolution, numRows - 1);
+  int j = std::min(sourceX / gridResolution, numColumns - 1);
   for (auto &offset : offsets) {
     int new_i = std::clamp(i + offset.first, 0, numRows - 1);
     int new_j = std::clamp(j + offset.second, 0, numColumns - 1);
-    fluidGrid.densitySourceGrid[new_i][new_j] = source.density;
-    fluidGrid.velocitySourceGridX[new_i][new_j] = source.velocity;
-    fluidGrid.velocitySourceGridY[new_i][new_j] = source.velocity;
+    fluidGrid.densitySourceGrid[new_i][new_j] = SOURCE_VALUE;
+    fluidGrid.velocitySourceGridX[new_i][new_j] = SOURCE_VALUE;
+    fluidGrid.velocitySourceGridY[new_i][new_j] = SOURCE_VALUE;
   }
+}
+
+void FluidApp::setup() {
+  initMesh();
+  ImGui::Initialize();
+  getWindow()->getSignalMouseDown().connect(
+      [this](ci::app::MouseEvent event) { onMouseDown(event); });
+  getWindow()->getSignalMouseDrag().connect(
+      [this](ci::app::MouseEvent event) { onMouseDrag(event); });
+  getWindow()->getSignalMouseUp().connect(
+      [this](ci::app::MouseEvent event) { onMouseUp(event); });
 }
 
 void FluidApp::keyDown(ci::app::KeyEvent event) {
   if (event.getChar() == 'q' || event.getChar() == 'Q') {
     quit();
   } else if (event.getChar() == 'r' || event.getChar() == 'R') {
-    fluidGrid = FluidGrid(numRows, numColumns, gridResolution);
+    fluidGrid.reset();
   } else if (event.getChar() == 'p' || event.getChar() == 'P') {
     simulationPaused = !simulationPaused;
   }
@@ -141,7 +141,7 @@ void FluidApp::onMouseDrag(ci::app::MouseEvent event) {
   int j = currentMousePosition.x / gridResolution;
 
   if (i >= 0 && i < numRows && j >= 0 && j < numColumns) {
-    fluidGrid.densitySourceGrid[i][j] += sourceValue;
+    fluidGrid.densitySourceGrid[i][j] += SOURCE_VALUE;
     fluidGrid.velocitySourceGridX[i][j] += dragDirection.x;
     fluidGrid.velocitySourceGridY[i][j] += dragDirection.y;
   }
@@ -151,39 +151,24 @@ void FluidApp::onMouseUp(ci::app::MouseEvent event) {
   lastMousePositon = ci::vec2(0, 0);
 }
 
-void FluidApp::setup() {
-  initMesh(numRows, numColumns, gridResolution);
-  ImGui::Initialize();
-  getWindow()->getSignalMouseDown().connect(
-      [this](ci::app::MouseEvent event) { onMouseDown(event); });
-  getWindow()->getSignalMouseDrag().connect(
-      [this](ci::app::MouseEvent event) { onMouseDrag(event); });
-  getWindow()->getSignalMouseUp().connect(
-      [this](ci::app::MouseEvent event) { onMouseUp(event); });
-}
-
 void FluidApp::update() {
   ImGui::Begin("Parameters");
   if (ImGui::Button("Reset")) {
-    fluidGrid = FluidGrid(numRows, numColumns, gridResolution);
+    fluidGrid.reset();
   }
   ImGui::Checkbox("Pause", &simulationPaused);
   ImGui::SliderFloat("Timestep", &timeStep, 0.1f, 0.5f);
   ImGui::SliderFloat("Diffusion factor", &diffusionFactor, 0.0f, 10.0f);
   ImGui::SliderFloat("Viscosity factor", &viscosityFactor, 0.0f, 10.0f);
-  ImGui::SliderFloat("Source value", &sourceValue, 10.0f, 100.0f);
   if (ImGui::BeginMenu("Add source")) {
     ImGui::InputInt("X", &sourceX);
     ImGui::InputInt("Y", &sourceY);
-    ImGui::InputFloat("Density source Value", &sourceDensity);
-    ImGui::InputFloat("Velocity source Value", &sourceVelocity);
     if (ImGui::Button("Add source")) {
-      fluidSources.push_back(
-          FluidSource{sourceX, sourceY, sourceDensity, sourceVelocity});
+      sourcesXY.push_back(ci::vec2(sourceX, sourceY));
     }
     if (ImGui::Button("Pop source")) {
-      if (fluidSources.size() > 0) {
-        fluidSources.pop_back();
+      if (sourcesXY.size() > 0) {
+        sourcesXY.pop_back();
       }
     }
     ImGui::EndMenu();
@@ -191,35 +176,23 @@ void FluidApp::update() {
   ImGui::End();
 
   if (!simulationPaused) {
-    for (int k = 0; k < fluidSources.size(); ++k) {
-      setConstantFluidSource(fluidSources[k]);
+    for (int k = 0; k < sourcesXY.size(); ++k) {
+      setConstantFluidSource(sourcesXY[k].x, sourcesXY[k].y);
     }
-
     fluidGrid.stepDensity(diffusionFactor, GAUSS_SEIDEL_ITERATIONS, timeStep);
     fluidGrid.stepVelocity(viscosityFactor, GAUSS_SEIDEL_ITERATIONS, timeStep);
+    updateMesh();
   }
 }
 
-void FluidApp::resize() {
-  numRows = getWindowHeight() / gridResolution;
-  numColumns = getWindowWidth() / gridResolution;
-  fluidGrid = FluidGrid(numRows, numColumns, gridResolution);
-  sourceX = getWindowWidth() / 2;
-  sourceY = getWindowHeight() / 2;
-  fluidSources.clear();
-  initMesh(numRows, numColumns, gridResolution);
-}
-
 void FluidApp::draw() {
-  updateMesh();
   ci::gl::clear(BG_COLOR);
-  ci::gl::draw(mesh);
+  ci::gl::draw(fluidMesh);
 }
 
 void prepareSettings(FluidApp::Settings *settings) {
-  settings->setResizable(true);
-  settings->setMultiTouchEnabled(false);
-  settings->setWindowSize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
+  settings->setResizable(false);
+  settings->setWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
 }
 
 CINDER_APP(FluidApp, ci::app::RendererGl, prepareSettings)
