@@ -8,10 +8,10 @@
 #define GAUSS_SEIDEL_ITERATIONS 20
 #define WINDOW_WIDTH 1920
 #define WINDOW_HEIGHT 1080
-#define GRID_RESOLUTION 10
+#define GRID_RESOLUTION 5
 #define DIFFUSION_FACTOR 0.001f
 #define VISCOSITY_FACTOR 0.001f
-#define SOURCE_VALUE 50.0f
+#define SOURCE_VALUE 200.0f
 #define TIMESTEP 0.01f
 #define BG_COLOR ci::Color(0.8f, 0.8f, 0.8f)
 #define FLUID_COLOR ci::Color(0.0f, 0.0f, 0.0f)
@@ -85,8 +85,13 @@ void FluidApp::updateMesh() {
   for (int i = 0; i < numRows; ++i) {
     for (int j = 0; j < numColumns; ++j) {
       float density = fluidGrid.densityGrid[i][j];
+      float hue =
+          0.5f + 0.1f * sin(2.0f * M_PI *
+                            density); // This will give a hue value that cycles
+                                      // between 0.5 (cyan) and 0.6 (blue)
+      ci::ColorA color = ci::ColorA(ci::CM_HSV, hue, 1.0f, 1.0f, density);
       for (int k = 0; k < 6; ++k) {
-        colors.push_back(ci::ColorA(FLUID_COLOR, density));
+        colors.push_back(color);
       }
     }
   }
@@ -157,7 +162,7 @@ void FluidApp::update() {
     fluidGrid.reset();
   }
   ImGui::Checkbox("Pause", &simulationPaused);
-  ImGui::SliderFloat("Timestep", &timeStep, 0.1f, 0.5f);
+  ImGui::SliderFloat("Timestep", &timeStep, 0.01f, 0.1f);
   ImGui::SliderFloat("Diffusion factor", &diffusionFactor, 0.0f, 10.0f);
   ImGui::SliderFloat("Viscosity factor", &viscosityFactor, 0.0f, 10.0f);
   if (ImGui::BeginMenu("Add source")) {
