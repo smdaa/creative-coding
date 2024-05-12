@@ -14,7 +14,6 @@
 #define SOURCE_VALUE 200.0f
 #define TIMESTEP 0.01f
 #define BG_COLOR ci::Color(0.8f, 0.8f, 0.8f)
-#define FLUID_COLOR ci::Color(0.0f, 0.0f, 0.0f)
 
 class FluidApp : public ci::app::App {
 public:
@@ -85,10 +84,7 @@ void FluidApp::updateMesh() {
   for (int i = 0; i < numRows; ++i) {
     for (int j = 0; j < numColumns; ++j) {
       float density = fluidGrid.densityGrid[i][j];
-      float hue =
-          0.5f + 0.1f * sin(2.0f * M_PI *
-                            density); // This will give a hue value that cycles
-                                      // between 0.5 (cyan) and 0.6 (blue)
+      float hue = 0.5f + 0.1f * sin(2.0f * M_PI * density);
       ci::ColorA color = ci::ColorA(ci::CM_HSV, hue, 1.0f, 1.0f, density);
       for (int k = 0; k < 6; ++k) {
         colors.push_back(color);
