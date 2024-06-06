@@ -4,7 +4,6 @@
 #include "cinder/gl/gl.h"
 
 #include <omp.h>
-#include <type_traits>
 
 using namespace ci;
 using namespace ci::app;
@@ -20,7 +19,7 @@ constexpr FloatType initialConstantY = 0.156;
 constexpr FloatType initialScale = 1.0;
 constexpr FloatType initialOffsetX = 0.0;
 constexpr FloatType initialOffsetY = 0.0;
-constexpr int initialMaxIterations = 200;
+constexpr int initialMaxIterations = 100;
 
 FloatType computeJulia(FloatType positionX, FloatType positionY,
                        FloatType constantX, FloatType constantY,
@@ -64,8 +63,19 @@ private:
   bool mNeedsUpdate = true;
   bool mIsZooming = false;
 
+  enum ColorMap { GRAYSCALE, JET, HOT, COOL, RAINBOW };
+  ColorMap mCurrentColorMap = GRAYSCALE;
+
   void initFractalMesh();
   void updateFractalMesh();
+  Color getColorForIteration(int iterations) const;
+  Color interpolateColor(const Color &color1, const Color &color2,
+                         float factor) const;
+  Color getGrayscaleColor(float t) const;
+  Color getJetColor(float t) const;
+  Color getHotColor(float t) const;
+  Color getCoolColor(float t) const;
+  Color getRainbowColor(float t) const;
 };
 
 void FractalApp::initFractalMesh() {
@@ -85,7 +95,74 @@ void FractalApp::initFractalMesh() {
   mFractalMesh->bufferAttrib(geom::COLOR, mColors);
 
   mNeedsUpdate = true;
-};
+}
+
+Color FractalApp::interpolateColor(const Color &color1, const Color &color2,
+                                   float factor) const {
+  return color1 * (1.0f - factor) + color2 * factor;
+}
+
+Color FractalApp::getGrayscaleColor(float t) const { return Color(t, t, t); }
+
+Color FractalApp::getJetColor(float t) const {
+  if (t < 0.25f)
+    return interpolateColor(Color(0, 0, 0.5), Color(0, 0, 1), t * 4);
+  else if (t < 0.5f)
+    return interpolateColor(Color(0, 0, 1), Color(0, 1, 1), (t - 0.25f) * 4);
+  else if (t < 0.75f)
+    return interpolateColor(Color(0, 1, 1), Color(1, 1, 0), (t - 0.5f) * 4);
+  else
+    return interpolateColor(Color(1, 1, 0), Color(1, 0, 0), (t - 0.75f) * 4);
+}
+
+Color FractalApp::getHotColor(float t) const {
+  if (t < 0.33f)
+    return interpolateColor(Color(0, 0, 0), Color(1, 0, 0), t * 3);
+  else if (t < 0.66f)
+    return interpolateColor(Color(1, 0, 0), Color(1, 1, 0), (t - 0.33f) * 3);
+  else
+    return interpolateColor(Color(1, 1, 0), Color(1, 1, 1), (t - 0.66f) * 3);
+}
+
+Color FractalApp::getCoolColor(float t) const {
+  return interpolateColor(Color(0, 1, 1), Color(1, 0, 1), t);
+}
+
+Color FractalApp::getRainbowColor(float t) const {
+  if (t < 0.2f)
+    return interpolateColor(Color(1, 0, 0), Color(1, 0.5, 0), t * 5);
+  else if (t < 0.4f)
+    return interpolateColor(Color(1, 0.5, 0), Color(1, 1, 0), (t - 0.2f) * 5);
+  else if (t < 0.6f)
+    return interpolateColor(Color(1, 1, 0), Color(0, 1, 0), (t - 0.4f) * 5);
+  else if (t < 0.8f)
+    return interpolateColor(Color(0, 1, 0), Color(0, 0, 1), (t - 0.6f) * 5);
+  else
+    return interpolateColor(Color(0, 0, 1), Color(0.5, 0, 0.5), (t - 0.8f) * 5);
+}
+
+Color FractalApp::getColorForIteration(int iterations) const {
+  if (iterations == mMaxIterations) {
+    return Color::black();
+  }
+
+  float t = static_cast<float>(iterations) / mMaxIterations;
+
+  switch (mCurrentColorMap) {
+  case GRAYSCALE:
+    return getGrayscaleColor(t);
+  case JET:
+    return getJetColor(t);
+  case HOT:
+    return getHotColor(t);
+  case COOL:
+    return getCoolColor(t);
+  case RAINBOW:
+    return getRainbowColor(t);
+  default:
+    return getGrayscaleColor(t);
+  }
+}
 
 void FractalApp::updateFractalMesh() {
 #pragma omp parallel for schedule(dynamic, 1)
@@ -99,12 +176,8 @@ void FractalApp::updateFractalMesh() {
       FloatType iterations =
           computeJulia(fractalX, fractalY, mConstantX, mConstantY,
                        mEscapeRadiusSquared, mMaxIterations);
-      Color color = iterations == mMaxIterations
-                        ? Color::black()
-                        : Color(1.0f, 1.0f, 1.0f) *
-                              (1.0f - iterations / static_cast<FloatType>(
-                                                       mMaxIterations));
-      mColors[y * mWindowWidth + x] = color;
+      mColors[y * mWindowWidth + x] =
+          getColorForIteration(static_cast<int>(iterations));
     }
   }
   mFractalMesh->bufferAttrib(geom::COLOR, mColors);
@@ -122,12 +195,19 @@ void FractalApp::update() {
   FloatType oldConstantX = mConstantX;
   FloatType oldConstantY = mConstantY;
   FloatType oldScale = mScale;
+  ColorMap oldColorMap = mCurrentColorMap;
 
   ImGui::InputInt("Max iterations", &mMaxIterations);
+  const char *items[] = {"Grayscale", "Jet", "Hot", "Cool", "Rainbow"};
+  int currentColorMapIndex = static_cast<int>(mCurrentColorMap);
+  ImGui::Combo("Color map", &currentColorMapIndex, items, IM_ARRAYSIZE(items));
+  mCurrentColorMap = static_cast<ColorMap>(currentColorMapIndex);
+
   ImGui::End();
 
   if (mMaxIterations != oldMaxIterations || mConstantX != oldConstantX ||
-      mConstantY != oldConstantY || mScale != oldScale) {
+      mConstantY != oldConstantY || mScale != oldScale ||
+      mCurrentColorMap != oldColorMap) {
     mNeedsUpdate = true;
   }
 
