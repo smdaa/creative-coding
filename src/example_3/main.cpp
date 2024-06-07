@@ -165,7 +165,7 @@ Color FractalApp::getColorForIteration(int iterations) const {
 }
 
 void FractalApp::updateFractalMesh() {
-#pragma omp parallel for schedule(dynamic, 1)
+#pragma omp parallel for schedule(dynamic)
   for (int y = 0; y < mWindowHeight; y++) {
     for (int x = 0; x < mWindowWidth; x++) {
       FloatType fractalX =
