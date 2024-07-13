@@ -159,10 +159,6 @@ void FractalApp::draw()
         {
           if (x + i < mWindowWidth)
           {
-            float normalizedValue = static_cast<float>(iterCounts[i]) / static_cast<float>(mMaxIterations);
-            float r = normalizedValue;
-            float g = normalizedValue;
-            float b = normalizedValue;
             Color color = getColor(iterCounts[i], x + i, y, mMaxIterations);
 
             mSurface.setPixel(ivec2(x + i, y), color);
@@ -173,7 +169,6 @@ void FractalApp::draw()
 
     mNeedsUpdate = false;
   }
-
   gl::Texture2dRef texture = gl::Texture2d::create(mSurface);
 
   // Render to main FBO
@@ -182,9 +177,8 @@ void FractalApp::draw()
   gl::draw(texture);
   mFbo->unbindFramebuffer();
 
-    // Clear the screen and draw the final result
+  // Clear the screen and draw the final result
   gl::clear(Color::black());
-
 
   gl::draw(mFbo->getColorTexture());
   ImGui::Render();
