@@ -9,8 +9,8 @@
 using namespace ci;
 using namespace ci::app;
 
-constexpr int initialWindowWidth = 512;
-constexpr int initialWindowHeight = 512;
+constexpr int initialWindowWidth = 1280;
+constexpr int initialWindowHeight = 720;
 
 constexpr double escapeRadiusSquared = 4.0;
 constexpr double initialConstantX = -0.8;
@@ -18,7 +18,8 @@ constexpr double initialConstantY = 0.156;
 constexpr double initialOffsetX = 0.0;
 constexpr double initialOffsetY = 0.0;
 constexpr double initialScale = 1.0;
-constexpr int initialMaxIterations = 500;
+constexpr int initialMaxIterations = 100;
+
 
 __m256i computeJulia(__m256d positionX, __m256d positionY,
                      __m256d constantX, __m256d constantY,
@@ -68,9 +69,37 @@ private:
   int mMaxIterations = initialMaxIterations;
 
   Surface32f mSurface = Surface32f(mWindowWidth, mWindowHeight, false);
+  gl::FboRef mFbo = gl::Fbo::create(mWindowWidth, mWindowHeight);
 
   bool mNeedsUpdate = true;
   bool mIsZooming = false;
+
+  Color getColor(int iteration, float x, float y, int maxIterations)
+  {
+    const float PHI = 1.61803398875f; // Golden ratio
+    if (iteration == maxIterations)
+      return Color(0, 0, 0);
+
+    float zn = sqrt(x * x + y * y) + 1e-10;
+    float nu = log(log(zn) / log(2.0f)) / log(2.0f);
+    float iter = iteration + 1 - nu;
+
+    float t = fmod(iter * PHI, 1.0f);
+    float wave = 0.5f * (sin(t * 2 * M_PI) + 1.0f);
+
+    float r = 0.5f + 0.5f * sin(iter * 0.1f);
+    float g = 0.5f + 0.5f * cos(log(zn) * 0.1f);
+    float b = wave;
+
+    float brightness = pow(static_cast<float>(iteration) / maxIterations, 0.3f);
+
+    Color base(r * 0.2f, g * 0.1f, b * 0.7f);
+    Color glow(r * 0.8f, g * 0.2f, b * 0.5);
+
+    Color mixedColor = base * (1 - wave) + glow * wave;
+
+    return mixedColor * brightness;
+  }
 };
 
 void FractalApp::setup()
@@ -100,7 +129,6 @@ void FractalApp::update()
 
 void FractalApp::draw()
 {
-  gl::clear(Color::black());
 
   if (mNeedsUpdate)
   {
@@ -131,23 +159,34 @@ void FractalApp::draw()
         {
           if (x + i < mWindowWidth)
           {
-
             float normalizedValue = static_cast<float>(iterCounts[i]) / static_cast<float>(mMaxIterations);
-            float r = normalizedValue < 0.5f ? 0 : 2 * (normalizedValue - 0.5f);
-            float g = 0;
-            float b = normalizedValue < 0.5f ? 2 * normalizedValue : 1 - 2 * (normalizedValue - 0.5f);
-            Color color = Color(r, g, b);
+            float r = normalizedValue;
+            float g = normalizedValue;
+            float b = normalizedValue;
+            Color color = getColor(iterCounts[i], x + i, y, mMaxIterations);
 
             mSurface.setPixel(ivec2(x + i, y), color);
           }
         }
       }
     }
+
     mNeedsUpdate = false;
   }
-  gl::Texture2dRef texture = gl::Texture2d::create(mSurface);
-  gl::draw(texture);
 
+  gl::Texture2dRef texture = gl::Texture2d::create(mSurface);
+
+  // Render to main FBO
+  mFbo->bindFramebuffer();
+  gl::clear();
+  gl::draw(texture);
+  mFbo->unbindFramebuffer();
+
+    // Clear the screen and draw the final result
+  gl::clear(Color::black());
+
+
+  gl::draw(mFbo->getColorTexture());
   ImGui::Render();
 }
 
@@ -206,6 +245,7 @@ void FractalApp::resize()
   mWindowWidth = getWindowWidth();
   mWindowHeight = getWindowHeight();
   mSurface = Surface32f(mWindowWidth, mWindowHeight, false);
+  mFbo = gl::Fbo::create(mWindowWidth, mWindowHeight);
   mNeedsUpdate = true;
 }
 
