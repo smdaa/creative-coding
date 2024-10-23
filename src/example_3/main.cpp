@@ -76,7 +76,8 @@ void renderJulia(ci::Surface32f *surface, int screenWidth, int screenHeight,
         if (x + i < screenWidth) {
           float brightness = static_cast<float>(iterCounts[i]) /
                              static_cast<float>(maxIterations);
-          ci::Color color = ci::Color(brightness, brightness, brightness);
+          ci::ColorA color =
+              ci::ColorA(brightness, brightness, brightness, brightness);
           surface->setPixel(ci::ivec2(x + i, y), color);
         }
       }
@@ -84,101 +85,119 @@ void renderJulia(ci::Surface32f *surface, int screenWidth, int screenHeight,
   }
 }
 
-class Renderer {
+class FractalApp : public ci::app::App {
 public:
-  Renderer() : isRunning(true), scale(1.0), zoomSpeed(0.1) {
-    surface = ci::Surface32f(screenWidth, screenHeight, false);
-    worker = std::thread(&Renderer::workerLoop, this);
+  FractalApp() {
+    targetScale = 1.0;
+    activeScale = 1.0;
+    backScale = 1.0;
+    fadeAmount = 1.0f;
+
+    activeSurface = ci::Surface32f(screenWidth, screenHeight, true);
+    backSurface = ci::Surface32f(screenWidth, screenHeight, true);
+
+    needsNewRender = false;
+    renderComplete = false;
+    workerRunning = true;
+    worker = std::thread(&FractalApp::workerLoop, this);
   }
-  ~Renderer() {
-    isRunning = false;
+
+  ~FractalApp() {
+    workerRunning = false;
     if (worker.joinable()) {
       worker.join();
     }
   }
-
-  void getFrame(ci::Surface32f &outSurface, double requested_scale) {
-    std::lock_guard<std::mutex> lock(queueMutex);
-
-    if (queue.empty()) {
-      return;
-    }
-
-    while (queue.size() > 1) {
-      queue.pop();
-    }
-
-    double frame_scale = queue.front().first;
-    const ci::Surface32f &frame = queue.front().second;
-    double zoomFactor = requested_scale / frame_scale;
-    int originalWidth = frame.getWidth();
-    int originalHeight = frame.getHeight();
-    float aspectRatio =
-        static_cast<float>(originalWidth) / static_cast<float>(originalHeight);
-    int cropWidth = static_cast<int>(originalWidth / zoomFactor);
-    int cropHeight = static_cast<int>(cropWidth / aspectRatio);
-    int cropX = (originalWidth - cropWidth) / 2;
-    int cropY = (originalHeight - cropHeight) / 2;
-    ci::Area cropArea(cropX, cropY, cropX + cropWidth, cropY + cropHeight);
-    ci::Surface32f croppedSurface = frame.clone(cropArea);
-    outSurface = ci::Surface32f(screenWidth, screenHeight, frame.hasAlpha(),
-                                frame.getChannelOrder());
-    ci::ip::resize(croppedSurface, &outSurface);
-  }
-
-private:
-  bool isRunning;
-  double scale;
-  double zoomSpeed;
-  std::queue<std::pair<double, ci::Surface32f>> queue;
-  std::mutex queueMutex;
-  std::thread worker;
-  ci::Surface32f surface;
-
-  void workerLoop() {
-    while (isRunning) {
-      renderJulia(&surface, screenWidth, screenHeight, constantX, constantY,
-                  offsetX, offsetY, scale, maxIterations, escapeRadiusSquared);
-      {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        queue.push(std::make_pair(scale, surface));
-
-        std::cout << "Rendered at scale: " << scale
-                  << ". Frame added to queue. Queue size: " << queue.size()
-                  << std::endl;
-      }
-      scale = scale + zoomSpeed;
-    }
-  }
-};
-
-class FractalApp : public ci::app::App {
-public:
-  FractalApp() : scale(1.0), zoomSpeed(0.01), renderer() {}
 
   void setup() override;
   void update() override;
   void draw() override;
 
 private:
-  double scale;
-  double zoomSpeed;
-  Renderer renderer;
-  ci::gl::Texture2dRef texture;
+  double targetScale;
+  double activeScale;
+  double backScale;
+  float fadeAmount;
+
+  ci::Surface32f activeSurface;
+  ci::Surface32f backSurface;
+  ci::gl::Texture2dRef activeTexture;
+  ci::gl::Texture2dRef backTexture;
+
+  std::mutex mutex;
+  bool needsNewRender;
+  bool renderComplete;
+  bool workerRunning;
+  std::thread worker;
+
+  void workerLoop() {
+    while (workerRunning) {
+      std::unique_lock<std::mutex> lock(mutex);
+      if (needsNewRender) {
+        std::cout << "workerLoop : targetScale" << targetScale << std::endl;
+        renderJulia(&backSurface, screenWidth, screenHeight, constantX,
+                    constantY, offsetX, offsetY, targetScale, maxIterations,
+                    escapeRadiusSquared);
+        renderComplete = true;
+        needsNewRender = false;
+      }
+      lock.unlock();
+    }
+  }
+
+  void swapBuffers() {
+    std::swap(activeSurface, backSurface);
+    std::swap(activeTexture, backTexture);
+    activeScale = backScale;
+    backScale = targetScale;
+  }
 };
 
-void FractalApp::setup() {}
+void FractalApp::setup() {
+  renderJulia(&activeSurface, screenWidth, screenHeight, constantX, constantY,
+              offsetX, offsetY, activeScale, maxIterations,
+              escapeRadiusSquared);
+  renderJulia(&backSurface, screenWidth, screenHeight, constantX, constantY,
+              offsetX, offsetY, backScale, maxIterations, escapeRadiusSquared);
+
+  activeTexture = ci::gl::Texture2d::create(activeSurface);
+  backTexture = ci::gl::Texture2d::create(backSurface);
+}
 
 void FractalApp::update() {
-  ci::Surface32f latestSurface;
-  renderer.getFrame(latestSurface, scale);
-  texture = ci::gl::Texture::create(latestSurface);
-  scale = scale + zoomSpeed;
+  targetScale = targetScale * 1.01;
+
+  if (fadeAmount >= 1.0f) {
+    std::lock_guard<std::mutex> lock(mutex);
+    needsNewRender = true;
+  }
+
+  if (renderComplete) {
+    std::lock_guard<std::mutex> lock(mutex);
+    backTexture = ci::gl::Texture2d::create(backSurface);
+    renderComplete = false;
+    fadeAmount = 1.0f;
+  }
+
+  if (fadeAmount > 0.0f) {
+    fadeAmount -= 0.005f;
+    if (fadeAmount <= 0.0f) {
+      swapBuffers();
+      fadeAmount = 1.0f;
+    }
+  }
 }
 
 void FractalApp::draw() {
   ci::gl::clear(ci::Color(0, 0, 0));
-  ci::gl::draw(texture);
+
+  // Draw active (current) texture at full opacity
+  ci::gl::color(1, 1, 1, 1.0f); // Red for debugging
+  ci::gl::draw(activeTexture);
+
+  // Draw back (next frame) texture with fade in
+  ci::gl::color(1, 1, 1, 1.0f - fadeAmount);
+  ci::gl::draw(backTexture);
 }
 
 void prepareSettings(FractalApp::Settings *settings) {
