@@ -7,15 +7,18 @@
 #include <mutex>
 #include <omp.h>
 
-constexpr int screenWidth = 500;
-constexpr int screenHeight = 500;
+constexpr int screenWidth = 1920;
+constexpr int screenHeight = 1080;
 constexpr double constantX = -0.391;
 constexpr double constantY = -0.587;
 constexpr double scale = 1.0;
 constexpr double offsetX = 0.0;
 constexpr double offsetY = 0.0;
-constexpr int maxIterations = 100;
+constexpr int maxIterations = 1000;
 constexpr int escapeRadiusSquared = 4;
+
+constexpr float zoom_speed = 0.5f;
+constexpr float zoom_factor = 1.5f;
 
 __m256i computeJulia(__m256d positionX, __m256d positionY, __m256d constantX,
                      __m256d constantY, __m256d escapeRadiusSquared,
@@ -88,13 +91,14 @@ void renderJulia(ci::Surface32f *surface, int screenWidth, int screenHeight,
 class FractalApp : public ci::app::App {
 public:
   FractalApp() {
+    baseScale = 1.0;
     targetScale = 1.0;
-    activeScale = 1.0;
-    backScale = 1.0;
-    fadeTime = 0.0f;
+    currentScale = 1.0;
 
-    activeSurface = ci::Surface32f(screenWidth, screenHeight, true);
-    backSurface = ci::Surface32f(screenWidth, screenHeight, true);
+    zoomTime = 0.0;
+    lastFrameTime = 0.0;
+
+    surface = ci::Surface32f(screenWidth, screenHeight, true);
 
     needsNewRender = false;
     workerRunning = true;
@@ -118,15 +122,15 @@ public:
   void draw() override;
 
 private:
+  double baseScale;
   double targetScale;
-  double activeScale;
-  double backScale;
-  float fadeTime;
+  double currentScale;
 
-  ci::Surface32f activeSurface;
-  ci::Surface32f backSurface;
-  ci::gl::Texture2dRef activeTexture;
-  ci::gl::Texture2dRef backTexture;
+  double zoomTime;
+  double lastFrameTime;
+
+  ci::Surface32f surface;
+  ci::gl::Texture2dRef texture;
 
   bool needsNewRender;
   bool workerRunning;
@@ -143,62 +147,54 @@ private:
       if (!workerRunning)
         break;
 
-      std::cout << "workerLoop : targetScale " << targetScale << std::endl;
-      renderJulia(&backSurface, screenWidth, screenHeight, constantX, constantY,
+      renderJulia(&surface, screenWidth, screenHeight, constantX, constantY,
                   offsetX, offsetY, targetScale, maxIterations,
                   escapeRadiusSquared);
 
+      std::cout << "workerLoop : DONE targetScale " << targetScale << std::endl;
       needsNewRender = false;
     }
   }
-
-  void swapBuffers() {
-    std::swap(activeSurface, backSurface);
-    std::swap(activeTexture, backTexture);
-    activeScale = backScale;
-    backScale = targetScale;
-  }
 };
 
-void FractalApp::setup() {
-  renderJulia(&activeSurface, screenWidth, screenHeight, constantX, constantY,
-              offsetX, offsetY, activeScale, maxIterations,
-              escapeRadiusSquared);
-  renderJulia(&backSurface, screenWidth, screenHeight, constantX, constantY,
-              offsetX, offsetY, backScale, maxIterations, escapeRadiusSquared);
-
-  activeTexture = ci::gl::Texture2d::create(activeSurface);
-  backTexture = ci::gl::Texture2d::create(backSurface);
-}
+void FractalApp::setup() { lastFrameTime = getElapsedSeconds(); }
 
 void FractalApp::update() {
+  double currentTime = getElapsedSeconds();
+  double deltaTime = currentTime - lastFrameTime;
+  lastFrameTime = currentTime;
 
-  if (!needsNewRender && fadeTime >= 1.0) {
+  zoomTime += deltaTime * zoom_speed;
+  currentScale = baseScale * exp(zoomTime * log(zoom_factor));
+
+  double scaleRatio = currentScale / baseScale;
+  if (scaleRatio >= zoom_factor && !needsNewRender) {
     std::lock_guard<std::mutex> lock(mtx);
-    std::swap(activeSurface, backSurface);
-    std::swap(activeTexture, backTexture);
 
-    backTexture = ci::gl::Texture2d::create(backSurface);
+    texture = ci::gl::Texture2d::create(surface);
 
-    targetScale = targetScale * 1.01;
+    baseScale = currentScale;
+    targetScale = baseScale * zoom_factor;
+    zoomTime = 0.0;
+
     needsNewRender = true;
     cv.notify_one();
-
-    fadeTime = 0.0f;
   }
-
-  fadeTime += 0.1;
-  std::cout << "FractalApp::update : fadeAmount " << fadeTime << std::endl;
 }
 
 void FractalApp::draw() {
   ci::gl::clear(ci::Color(0, 0, 0));
 
-  ci::gl::color(1, 1, 1, 1.0f);
-  ci::gl::draw(activeTexture);
+  ci::vec2 center(getWindowWidth() * 0.5f, getWindowHeight() * 0.5f);
+  float zoom = currentScale / baseScale;
 
-  ci::gl::color(1, 1, 1, 1.0f - fadeTime / 1.0);
-  ci::gl::draw(backTexture);
+  ci::gl::pushModelMatrix();
+  ci::gl::translate(center);
+  ci::gl::scale(ci::vec2(zoom));
+  ci::gl::translate(-center);
+  ci::gl::color(1, 1, 1, 1.0f);
+  ci::gl::draw(texture);
+  ci::gl::popModelMatrix();
 }
 
 void prepareSettings(FractalApp::Settings *settings) {
