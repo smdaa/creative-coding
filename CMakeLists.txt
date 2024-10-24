@@ -3,7 +3,7 @@ project(creative-coding)
 
 find_package(OpenMP REQUIRED)
 
-#set(MPG123_INCLUDE_DIR /usr/include/x86_64-linux-gnu)
+set(MPG123_INCLUDE_DIR /usr/include/x86_64-linux-gnu)
 
 # Add Cinder as a submodule
 add_subdirectory(extern/Cinder)

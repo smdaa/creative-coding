@@ -1,20 +1,20 @@
 #include "cinder/app/App.h"
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
-#include "cinder/ip/Resize.h"
 
 #include <immintrin.h>
+#include <iostream>
+#include <mutex>
 #include <omp.h>
-#include <queue>
 
-constexpr int screenWidth = 1920;
-constexpr int screenHeight = 1080;
+constexpr int screenWidth = 500;
+constexpr int screenHeight = 500;
 constexpr double constantX = -0.391;
 constexpr double constantY = -0.587;
 constexpr double scale = 1.0;
 constexpr double offsetX = 0.0;
 constexpr double offsetY = 0.0;
-constexpr int maxIterations = 1000;
+constexpr int maxIterations = 100;
 constexpr int escapeRadiusSquared = 4;
 
 __m256i computeJulia(__m256d positionX, __m256d positionY, __m256d constantX,
@@ -91,19 +91,23 @@ public:
     targetScale = 1.0;
     activeScale = 1.0;
     backScale = 1.0;
-    fadeAmount = 1.0f;
+    fadeTime = 0.0f;
 
     activeSurface = ci::Surface32f(screenWidth, screenHeight, true);
     backSurface = ci::Surface32f(screenWidth, screenHeight, true);
 
     needsNewRender = false;
-    renderComplete = false;
     workerRunning = true;
     worker = std::thread(&FractalApp::workerLoop, this);
   }
 
   ~FractalApp() {
-    workerRunning = false;
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      workerRunning = false;
+    }
+    cv.notify_one();
+
     if (worker.joinable()) {
       worker.join();
     }
@@ -117,31 +121,34 @@ private:
   double targetScale;
   double activeScale;
   double backScale;
-  float fadeAmount;
+  float fadeTime;
 
   ci::Surface32f activeSurface;
   ci::Surface32f backSurface;
   ci::gl::Texture2dRef activeTexture;
   ci::gl::Texture2dRef backTexture;
 
-  std::mutex mutex;
   bool needsNewRender;
-  bool renderComplete;
   bool workerRunning;
   std::thread worker;
 
+  std::mutex mtx;
+  std::condition_variable cv;
+
   void workerLoop() {
-    while (workerRunning) {
-      std::unique_lock<std::mutex> lock(mutex);
-      if (needsNewRender) {
-        std::cout << "workerLoop : targetScale" << targetScale << std::endl;
-        renderJulia(&backSurface, screenWidth, screenHeight, constantX,
-                    constantY, offsetX, offsetY, targetScale, maxIterations,
-                    escapeRadiusSquared);
-        renderComplete = true;
-        needsNewRender = false;
-      }
-      lock.unlock();
+    while (true) {
+      std::unique_lock<std::mutex> lock(mtx);
+      cv.wait(lock, [this] { return needsNewRender || !workerRunning; });
+
+      if (!workerRunning)
+        break;
+
+      std::cout << "workerLoop : targetScale " << targetScale << std::endl;
+      renderJulia(&backSurface, screenWidth, screenHeight, constantX, constantY,
+                  offsetX, offsetY, targetScale, maxIterations,
+                  escapeRadiusSquared);
+
+      needsNewRender = false;
     }
   }
 
@@ -165,38 +172,32 @@ void FractalApp::setup() {
 }
 
 void FractalApp::update() {
-  targetScale = targetScale * 1.01;
 
-  if (fadeAmount >= 1.0f) {
-    std::lock_guard<std::mutex> lock(mutex);
-    needsNewRender = true;
-  }
+  if (!needsNewRender && fadeTime >= 1.0) {
+    std::lock_guard<std::mutex> lock(mtx);
+    std::swap(activeSurface, backSurface);
+    std::swap(activeTexture, backTexture);
 
-  if (renderComplete) {
-    std::lock_guard<std::mutex> lock(mutex);
     backTexture = ci::gl::Texture2d::create(backSurface);
-    renderComplete = false;
-    fadeAmount = 1.0f;
+
+    targetScale = targetScale * 1.01;
+    needsNewRender = true;
+    cv.notify_one();
+
+    fadeTime = 0.0f;
   }
 
-  if (fadeAmount > 0.0f) {
-    fadeAmount -= 0.005f;
-    if (fadeAmount <= 0.0f) {
-      swapBuffers();
-      fadeAmount = 1.0f;
-    }
-  }
+  fadeTime += 0.1;
+  std::cout << "FractalApp::update : fadeAmount " << fadeTime << std::endl;
 }
 
 void FractalApp::draw() {
   ci::gl::clear(ci::Color(0, 0, 0));
 
-  // Draw active (current) texture at full opacity
-  ci::gl::color(1, 1, 1, 1.0f); // Red for debugging
+  ci::gl::color(1, 1, 1, 1.0f);
   ci::gl::draw(activeTexture);
 
-  // Draw back (next frame) texture with fade in
-  ci::gl::color(1, 1, 1, 1.0f - fadeAmount);
+  ci::gl::color(1, 1, 1, 1.0f - fadeTime / 1.0);
   ci::gl::draw(backTexture);
 }
 
