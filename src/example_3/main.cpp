@@ -7,8 +7,8 @@
 #include <mutex>
 #include <omp.h>
 
-constexpr int screenWidth = 1920;
-constexpr int screenHeight = 1080;
+constexpr int screenWidth = 500;
+constexpr int screenHeight = 500;
 constexpr double constantX = -0.391;
 constexpr double constantY = -0.587;
 constexpr double scale = 1.0;
@@ -16,9 +16,7 @@ constexpr double offsetX = 0.0;
 constexpr double offsetY = 0.0;
 constexpr int maxIterations = 1000;
 constexpr int escapeRadiusSquared = 4;
-
-constexpr float zoom_speed = 0.5f;
-constexpr float zoom_factor = 1.5f;
+constexpr float zoom_factor = 1.2f;
 
 __m256i computeJulia(__m256d positionX, __m256d positionY, __m256d constantX,
                      __m256d constantY, __m256d escapeRadiusSquared,
@@ -91,8 +89,11 @@ void renderJulia(ci::Surface32f *surface, int screenWidth, int screenHeight,
 class FractalApp : public ci::app::App {
 public:
   FractalApp() {
+    // True scale of the last render that workerloop has worked on.
     baseScale = 1.0;
+    // True scale of the render that workerloop is working on.
     targetScale = 1.0;
+    // Fake scale of the rendered image.
     currentScale = 1.0;
 
     zoomTime = 0.0;
@@ -100,7 +101,7 @@ public:
 
     surface = ci::Surface32f(screenWidth, screenHeight, true);
 
-    needsNewRender = false;
+    needsNewRender = true;
     workerRunning = true;
     worker = std::thread(&FractalApp::workerLoop, this);
   }
@@ -157,23 +158,23 @@ private:
   }
 };
 
-void FractalApp::setup() { lastFrameTime = getElapsedSeconds(); }
+void FractalApp::setup() {}
 
 void FractalApp::update() {
   double currentTime = getElapsedSeconds();
   double deltaTime = currentTime - lastFrameTime;
   lastFrameTime = currentTime;
 
-  zoomTime += deltaTime * zoom_speed;
+  zoomTime += deltaTime;
   currentScale = baseScale * exp(zoomTime * log(zoom_factor));
-
   double scaleRatio = currentScale / baseScale;
+
   if (scaleRatio >= zoom_factor && !needsNewRender) {
     std::lock_guard<std::mutex> lock(mtx);
 
     texture = ci::gl::Texture2d::create(surface);
 
-    baseScale = currentScale;
+    baseScale = targetScale;
     targetScale = baseScale * zoom_factor;
     zoomTime = 0.0;
 
@@ -185,7 +186,7 @@ void FractalApp::update() {
 void FractalApp::draw() {
   ci::gl::clear(ci::Color(0, 0, 0));
 
-  ci::vec2 center(getWindowWidth() * 0.5f, getWindowHeight() * 0.5f);
+  ci::vec2 center(screenHeight * 0.5f, screenHeight * 0.5f);
   float zoom = currentScale / baseScale;
 
   ci::gl::pushModelMatrix();
