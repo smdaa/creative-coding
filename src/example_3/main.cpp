@@ -1,55 +1,26 @@
-#include "cinder/CinderImGui.h"
 #include "cinder/app/App.h"
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
 
+#include <cinder/Surface.h>
+#include <cinder/gl/Texture.h>
 #include <immintrin.h>
-#include <mutex>
-#include <omp.h>
+#include <queue>
+#include <utility>
 
-constexpr int screenWidth = 1000;
-constexpr int screenHeight = 1000;
-constexpr double initialConstantX = -0.7269;
-constexpr double initialConstantY = 0.1889;
-constexpr double offsetX = 0.0;
-constexpr double offsetY = 0.0;
-constexpr int maxIterations = 1000;
-constexpr int escapeRadiusSquared = 4;
-constexpr int samplingCount = 4;
-constexpr float zoom_factor = 1.5f;
+constexpr int defaultScreenWidth = 200;
+constexpr int defaultScreenHeight = 200;
 
-std::vector<ci::ColorA> generatePalette(int maxIterations) {
-  std::vector<ci::ColorA> palette(maxIterations + 1);
-
-  // Define key colors for gradient (in reverse order)
-  const std::vector<ci::ColorA> baseColors = {
-      ci::ColorA(0.7f, 0.7f, 0.8f, 1.0f), // Gray with slight purple tint
-      ci::ColorA(0.6f, 0.4f, 0.8f, 1.0f), // Light Purple
-      ci::ColorA(0.4f, 0.2f, 0.8f, 1.0f), // Purple-Blue
-      ci::ColorA(0.2f, 0.3f, 0.9f, 1.0f)  // Blue
-  };
-
-  // Points inside set are dark blue
-  palette[maxIterations] = ci::ColorA(0.1f, 0.1f, 0.3f, 1.0f);
-
-  for (int i = 0; i < maxIterations; i++) {
-    float t = (float)i / maxIterations;
-    t = t * (baseColors.size() - 1);
-
-    int idx = static_cast<int>(t);
-    float fract = t - idx;
-
-    const ci::ColorA &c1 = baseColors[idx];
-    const ci::ColorA &c2 =
-        baseColors[std::min(idx + 1, (int)baseColors.size() - 1)];
-
-    palette[i] =
-        ci::ColorA(ci::lerp(c1.r, c2.r, fract), ci::lerp(c1.g, c2.g, fract),
-                   ci::lerp(c1.b, c2.b, fract), 1.0f);
-  }
-
-  return palette;
-}
+struct RenderParameters {
+  double constantX;
+  double constantY;
+  double offsetX;
+  double offsetY;
+  double scale;
+  int maxIterations;
+  int escapeRadiusSquared;
+  int samplingCount;
+};
 
 __m256i computeJulia(__m256d positionX, __m256d positionY, __m256d constantX,
                      __m256d constantY, __m256d escapeRadiusSquared,
@@ -78,70 +49,77 @@ __m256i computeJulia(__m256d positionX, __m256d positionY, __m256d constantX,
   return iterations;
 }
 
-void renderJulia(ci::Surface32f *surface, int screenWidth, int screenHeight,
-                 double constantX, double constantY, double offsetX,
-                 double offsetY, double scale, int maxIterations,
-                 double escapeRadiusSquared, int samplingCount,
-                 const std::vector<ci::ColorA> &palette) {
+void renderJulia(ci::Surface32f *surface, const RenderParameters params) {
 
-  double screenWidthHalf = screenWidth / 2.0;
-  double screenHeightHalf = screenHeight / 2.0;
-  double scaleInv = 1.0 / scale;
+  int surfaceWidth = surface->getWidth();
+  int screenHeight = surface->getHeight();
+
+  double surfaceWidthHalf = surfaceWidth / 2.0;
+  double surfaceHeightHalf = screenHeight / 2.0;
+  double scaleInv = 1.0 / params.scale;
 
 #pragma omp parallel for
   for (int y = 0; y < screenHeight; y += 1) {
-    for (int x = 0; x < screenWidth; x += 4) {
-      __m256d screenWidthHalfVec = _mm256_set1_pd(screenWidthHalf);
+    for (int x = 0; x < surfaceWidth; x += 4) {
+      __m256d surfaceWidthHalfVec = _mm256_set1_pd(surfaceWidthHalf);
       __m256d scaleInvVec = _mm256_set1_pd(scaleInv);
       __m256d xVec = _mm256_set_pd(x + 3, x + 2, x + 1, x);
-      __m256d xShifted = _mm256_sub_pd(xVec, screenWidthHalfVec);
+      __m256d xShifted = _mm256_sub_pd(xVec, surfaceWidthHalfVec);
 
       double accumulatedR[4] = {0}, accumulatedG[4] = {0};
       double accumulatedB[4] = {0}, accumulatedA[4] = {0};
 
-      for (int sy = 0; sy < samplingCount; sy++) {
-        for (int sx = 0; sx < samplingCount; sx++) {
-          double subX = sx / static_cast<double>(samplingCount);
-          double subY = sy / static_cast<double>(samplingCount);
+      for (int sy = 0; sy < params.samplingCount; sy++) {
+        for (int sx = 0; sx < params.samplingCount; sx++) {
+          double subX = sx / static_cast<double>(params.samplingCount);
+          double subY = sy / static_cast<double>(params.samplingCount);
 
           __m256d posX = _mm256_add_pd(
               _mm256_mul_pd(
                   _mm256_mul_pd(_mm256_add_pd(xShifted, _mm256_set1_pd(subX)),
                                 scaleInvVec),
-                  _mm256_set1_pd(1.0 / screenWidthHalf)),
-              _mm256_set1_pd(offsetX));
+                  _mm256_set1_pd(1.0 / surfaceWidthHalf)),
+              _mm256_set1_pd(params.offsetX));
 
-          __m256d posY = _mm256_set1_pd((y + subY - screenHeightHalf) /
-                                            screenWidthHalf * scaleInv +
-                                        offsetY);
+          __m256d posY = _mm256_set1_pd((y + subY - surfaceHeightHalf) /
+                                            surfaceWidthHalf * scaleInv +
+                                        params.offsetY);
 
-          __m256d constX = _mm256_set1_pd(constantX);
-          __m256d constY = _mm256_set1_pd(constantY);
-          __m256d escRadSq = _mm256_set1_pd(escapeRadiusSquared);
+          __m256d constX = _mm256_set1_pd(params.constantX);
+          __m256d constY = _mm256_set1_pd(params.constantY);
+          __m256d escRadSq = _mm256_set1_pd(params.escapeRadiusSquared);
 
-          __m256i iterations =
-              computeJulia(posX, posY, constX, constY, escRadSq, maxIterations);
+          __m256i iterations = computeJulia(posX, posY, constX, constY,
+                                            escRadSq, params.maxIterations);
 
           int64_t iterCounts[4];
           _mm256_storeu_si256((__m256i *)iterCounts, iterations);
 
           for (int i = 0; i < 4; ++i) {
-            if (x + i < screenWidth) {
-              int idx =
-                  std::min(iterCounts[i], static_cast<int64_t>(maxIterations));
-              ci::ColorA color = palette[idx];
-              accumulatedR[i] += color.r;
-              accumulatedG[i] += color.g;
-              accumulatedB[i] += color.b;
-              accumulatedA[i] += color.a;
+            if (x + i < surfaceWidth) {
+              /*
+                int idx = std::min(iterCounts[i],
+                                   static_cast<int64_t>(params.maxIterations));
+                ci::ColorA color = palette[idx];
+                accumulatedR[i] += color.r;
+                accumulatedG[i] += color.g;
+                accumulatedB[i] += color.b;
+                accumulatedA[i] += color.a;
+              */
+              double brightness = static_cast<double>(iterCounts[i]) /
+                                  static_cast<double>(params.maxIterations);
+              accumulatedR[i] += brightness;
+              accumulatedG[i] += brightness;
+              accumulatedB[i] += brightness;
+              accumulatedA[i] += brightness;
             }
           }
         }
       }
 
-      double totalSamples = samplingCount * samplingCount;
+      double totalSamples = params.samplingCount * params.samplingCount;
       for (int i = 0; i < 4; ++i) {
-        if (x + i < screenWidth) {
+        if (x + i < surfaceWidth) {
           ci::ColorA finalColor(
               accumulatedR[i] / totalSamples, accumulatedG[i] / totalSamples,
               accumulatedB[i] / totalSamples, accumulatedA[i] / totalSamples);
@@ -152,223 +130,99 @@ void renderJulia(ci::Surface32f *surface, int screenWidth, int screenHeight,
   }
 }
 
-class FractalApp : public ci::app::App {
+struct RenderRequest {
+  ci::Surface32f *surface;
+  RenderParameters params;
+};
+
+class Renderer {
 public:
-  FractalApp() {
-    constantX = initialConstantX;
-    constantY = initialConstantY;
-    renderNeeded = true;
-    isZooming = false;
-    lastFrameTime = getElapsedSeconds();
-    zoomTime = 0.0;
-    baseScale = 1.0;
-    targetScale = baseScale * zoom_factor;
-    currentScale = baseScale;
-    needsNewRender = true;
-    workerRunning = true;
-
-    surface = ci::Surface32f(screenWidth, screenHeight, false);
-    zSurface = ci::Surface32f(screenWidth, screenHeight, false);
-    texture = ci::gl::Texture2d::create(surface);
-    zTexture = ci::gl::Texture2d::create(zSurface);
-    colorPalette = generatePalette(maxIterations);
-
-    worker = std::thread(&FractalApp::workerLoop, this);
+  Renderer() : running(true) {
+    renderThread = std::thread(&Renderer::run, this);
   }
 
-  void setup() override;
-  void update() override;
-  void draw() override;
+  ~Renderer() {
+    running = false;
+    cv.notify_one();
+    if (renderThread.joinable()) {
+      renderThread.join();
+    };
+  }
 
-  void keyDown(ci::app::KeyEvent event) override;
+  void requestRender(ci::Surface32f *surface, const RenderParameters &params) {
+    {
+      std::lock_guard<std::mutex> lock(m);
+      requests.push({surface, params});
+    }
+    cv.notify_one();
+  }
 
 private:
-  // State variables
-  double constantX;
-  double constantY;
-  bool renderNeeded;
-  bool isZooming;
-  double lastFrameTime;
-  double zoomTime;
-  double baseScale;
-  double targetScale;
-  double currentScale;
-  bool needsNewRender;
-  bool workerRunning;
-
-  // Surfaces and textures
-  ci::Surface32f surface;
-  ci::Surface32f zSurface;
-  ci::gl::Texture2dRef texture;
-  ci::gl::Texture2dRef zTexture;
-  std::vector<ci::ColorA> colorPalette;
-
-  // Threading
-  std::mutex mtx;
+  std::thread renderThread;
+  std::atomic<bool> running;
+  std::queue<RenderRequest> requests;
+  std::mutex m;
   std::condition_variable cv;
-  std::thread worker;
 
-  // Helper Functions
-  void resetZoomState();
-  void updateZoom(double deltaTime);
-  void startNewZoomRender();
-  void renderSurface();
-
-  // Worker Loop
-  void workerLoop();
-};
-
-// Reset zoom variables to initial state
-void FractalApp::resetZoomState() {
-  isZooming = false;
-  lastFrameTime = getElapsedSeconds();
-  zoomTime = 0.0;
-  baseScale = 1.0;
-  targetScale = baseScale * zoom_factor;
-  currentScale = baseScale;
-}
-
-void FractalApp::updateZoom(double deltaTime) {
-  zoomTime += deltaTime;
-  currentScale = baseScale * std::exp(zoomTime * std::log(zoom_factor));
-
-  if ((currentScale / baseScale) >= zoom_factor && !needsNewRender) {
-    startNewZoomRender();
-  }
-}
-
-void FractalApp::startNewZoomRender() {
-  std::lock_guard<std::mutex> lock(mtx);
-  zTexture->update(zSurface);
-  baseScale = targetScale;
-  targetScale = baseScale * zoom_factor;
-  zoomTime = 0.0;
-  needsNewRender = true;
-  renderNeeded = true;
-  cv.notify_one();
-}
-
-void FractalApp::renderSurface() {
-  renderJulia(&surface, screenWidth, screenHeight, constantX, constantY,
-              offsetX, offsetY, currentScale, maxIterations,
-              escapeRadiusSquared, samplingCount, colorPalette);
-}
-
-void FractalApp::workerLoop() {
-  while (true) {
-    std::unique_lock<std::mutex> lock(mtx);
-    cv.wait(lock, [this] { return needsNewRender || !workerRunning; });
-
-    if (!workerRunning)
-      break;
-
-    renderJulia(&zSurface, screenWidth, screenHeight, constantX, constantY,
-                offsetX, offsetY, targetScale, maxIterations,
-                escapeRadiusSquared, samplingCount, colorPalette);
-
-    needsNewRender = false;
-    renderNeeded = true;
-  }
-}
-
-void FractalApp::setup() {
-  ImGui::Initialize();
-  renderSurface();
-  texture->update(surface);
-  zTexture->update(surface);
-  renderNeeded = false;
-};
-
-void FractalApp::update() {
-  std::cout << renderNeeded << std::endl;
-
-  bool constantsChanged = false;
-
-  ImGui::Begin("Parameters");
-  double newConstantX = constantX;
-  double newConstantY = constantY;
-  if (ImGui::InputDouble("Constant X", &newConstantX, 0.01) ||
-      ImGui::InputDouble("Constant Y", &newConstantY, 0.01)) {
-    constantX = newConstantX;
-    constantY = newConstantY;
-    renderNeeded = true;
-  }
-  ImGui::End();
-
-  if (constantsChanged) {
-    std::lock_guard<std::mutex> lock(mtx);
-    needsNewRender = true; // Signal the worker to render a new zoomed surface
-    cv.notify_one();
-  }
-
-  double currentTime = getElapsedSeconds();
-  double deltaTime = currentTime - lastFrameTime;
-  lastFrameTime = currentTime;
-
-  if (isZooming) {
-    updateZoom(deltaTime);
-  } else if (renderNeeded) {
-    renderSurface();
-    texture->update(surface);
-    renderNeeded = false;
-  }
-};
-
-void FractalApp::draw() {
-  ci::gl::clear(ci::Color(0, 0, 0));
-  if (isZooming) {
-    ci::vec2 center(screenWidth * 0.5f, screenHeight * 0.5f);
-    float zoomLevel = currentScale / baseScale;
-
-    ci::gl::pushModelMatrix();
-    ci::gl::translate(center);
-    ci::gl::scale(ci::vec2(zoomLevel));
-    ci::gl::translate(-center);
-    ci::gl::color(1, 1, 1, 1.0f);
-    ci::gl::draw(zTexture);
-    ci::gl::popModelMatrix();
-  } else {
-    ci::gl::draw(texture);
-  }
-  ImGui::Render();
-};
-
-void FractalApp::keyDown(ci::app::KeyEvent event) {
-  char key = event.getChar();
-  if (key == 'q' || key == 'Q') {
-    quit();
-  } else if (key == 'r' || key == 'R') {
-    resetZoomState();
-    renderNeeded = true;
-    std::lock_guard<std::mutex> lock(mtx);
-    needsNewRender = true;
-    cv.notify_one();
-    renderSurface();
-    texture->update(surface);
-    zTexture->update(surface);
-  } else if (key == 's' || key == 'S') {
-    try {
-      auto now = std::chrono::system_clock::now();
-      auto timestamp = std::chrono::system_clock::to_time_t(now);
-      std::stringstream ss;
-      ss << "julia_"
-         << std::put_time(std::localtime(&timestamp), "%Y%m%d_%H%M%S")
-         << ".png";
-      ci::writeImage(ss.str(), surface);
-      std::cout << "Saved to: " << ss.str() << std::endl;
-    } catch (const std::exception &e) {
-      std::cerr << "Error saving image: " << e.what() << std::endl;
+  void run() {
+    while (running) {
+      RenderRequest request;
+      {
+        std::unique_lock<std::mutex> lock(m);
+        cv.wait(lock, [this] { return !requests.empty() || !running; });
+        if (!running && requests.empty()) {
+          return;
+        }
+        request = requests.front();
+        requests.pop();
+      }
+      renderJulia(request.surface, request.params);
     }
-  } else if (event.getCode() == ci::app::KeyEvent::KEY_SPACE) {
-    isZooming = !isZooming;
-    renderNeeded = true;
   }
-}
+};
+
+struct RenderView {
+  ci::Surface32f *surface;
+  ci::Area crop;
+};
+
+/*
+class ViewManager {
+public:
+  ViewManager()
+      : screenWidth(defaultScreenWidth), screenHeight(defaultScreenHeight),
+        renderer() {
+    currentSurface = ci::Surface32f(screenWidth, screenHeight, false);
+    backSurface = ci::Surface32f(screenWidth, screenHeight, false);
+  }
+
+private:
+  int screenWidth;
+  int screenHeight;
+
+  RenderParameters params;
+
+  Renderer renderer;
+
+  ci::Surface32f currentSurface;
+  ci::Surface32f backSurface;
+};
+*/
+
+/*
+class FractalApp : public ci::app::App {
+public:
+  FractalApp() : viewmanager() {}
+
+private:
+  ViewManager viewmanager;
+};
 
 void prepareSettings(FractalApp::Settings *settings) {
   settings->setFrameRate(60);
-  settings->setWindowSize(screenWidth, screenHeight);
+  settings->setWindowSize(defaultScreenWidth, defaultScreenHeight);
   settings->setResizable(false);
 }
 
 CINDER_APP(FractalApp, ci::app::RendererGl, prepareSettings)
+*/
