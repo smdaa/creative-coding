@@ -1,15 +1,22 @@
+#include "cinder/CinderImGui.h"
 #include "cinder/app/App.h"
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
 
-#include <cinder/Surface.h>
-#include <cinder/gl/Texture.h>
 #include <immintrin.h>
 #include <queue>
-#include <utility>
 
-constexpr int defaultScreenWidth = 200;
-constexpr int defaultScreenHeight = 200;
+constexpr int defaultScreenWidth = 1920;
+constexpr int defaultScreenHeight = 1080;
+
+constexpr double defaultConstantX = -0.7269;
+constexpr double defaultConstantY = 0.1889;
+constexpr double defaultOffsetX = 0.0;
+constexpr double defaultOffsetY = 0.0;
+constexpr double defaultScale = 1.0;
+constexpr int defaultMaxIterations = 1000;
+constexpr int defaultEscapeRadiusSquared = 4;
+constexpr int defaultSamplingCount = 4;
 
 struct RenderParameters {
   double constantX;
@@ -20,6 +27,14 @@ struct RenderParameters {
   int maxIterations;
   int escapeRadiusSquared;
   int samplingCount;
+
+  bool operator==(const RenderParameters &other) const {
+    return constantX == other.constantX && constantY == other.constantY &&
+           offsetX == other.offsetX && offsetY == other.offsetY &&
+           scale == other.scale && maxIterations == other.maxIterations &&
+           escapeRadiusSquared == other.escapeRadiusSquared &&
+           samplingCount == other.samplingCount;
+  }
 };
 
 __m256i computeJulia(__m256d positionX, __m256d positionY, __m256d constantX,
@@ -123,17 +138,13 @@ void renderJulia(ci::Surface32f *surface, const RenderParameters params) {
           ci::ColorA finalColor(
               accumulatedR[i] / totalSamples, accumulatedG[i] / totalSamples,
               accumulatedB[i] / totalSamples, accumulatedA[i] / totalSamples);
+
           surface->setPixel(ci::ivec2(x + i, y), finalColor);
         }
       }
     }
   }
 }
-
-struct RenderRequest {
-  ci::Surface32f *surface;
-  RenderParameters params;
-};
 
 class Renderer {
 public:
@@ -149,15 +160,22 @@ public:
     };
   }
 
-  void requestRender(ci::Surface32f *surface, const RenderParameters &params) {
+  void requestRender(ci::Surface32f *surface, const RenderParameters &params,
+                     std::function<void()> callback) {
     {
       std::lock_guard<std::mutex> lock(m);
-      requests.push({surface, params});
+      requests.push({surface, params, callback});
     }
     cv.notify_one();
   }
 
 private:
+  struct RenderRequest {
+    ci::Surface32f *surface;
+    RenderParameters params;
+    std::function<void()> callback;
+  };
+
   std::thread renderThread;
   std::atomic<bool> running;
   std::queue<RenderRequest> requests;
@@ -177,45 +195,116 @@ private:
         requests.pop();
       }
       renderJulia(request.surface, request.params);
+      if (request.callback) {
+        request.callback();
+      }
     }
   }
 };
 
-struct RenderView {
-  ci::Surface32f *surface;
-  ci::Area crop;
-};
-
-/*
 class ViewManager {
 public:
+  ci::Surface32f currentSurface;
+
   ViewManager()
       : screenWidth(defaultScreenWidth), screenHeight(defaultScreenHeight),
-        renderer() {
+        renderInProgress(false), renderer() {
     currentSurface = ci::Surface32f(screenWidth, screenHeight, false);
     backSurface = ci::Surface32f(screenWidth, screenHeight, false);
+    currentCrop = ci::Area(0, 0, screenWidth, screenHeight);
   }
+
+  void requestStaticRender(const RenderParameters &params) {
+    // If we have current params and they're the same as requested, no need to
+    // re-render
+    if (hasCurrentParams && currentParams == params) {
+      return;
+    }
+    // Ignore new requests while rendering
+    if (renderInProgress) {
+      return;
+    }
+    renderInProgress = true;
+    currentParams = params;
+    hasCurrentParams = true;
+    auto callback = [this]() {
+      std::lock_guard<std::mutex> lock(staticRenderMutex);
+      staticRenderQueue.push(true);
+    };
+    renderer.requestRender(&backSurface, params, callback);
+  }
+
+  void update() { processStaticRenderQueue(); }
 
 private:
   int screenWidth;
   int screenHeight;
-
-  RenderParameters params;
-
+  bool renderInProgress;
+  bool hasCurrentParams;
   Renderer renderer;
 
-  ci::Surface32f currentSurface;
+  ci::Area currentCrop;
   ci::Surface32f backSurface;
-};
-*/
+  RenderParameters currentParams;
 
-/*
+  std::mutex staticRenderMutex;
+  std::queue<bool> staticRenderQueue;
+
+  void processStaticRenderQueue() {
+    std::lock_guard<std::mutex> lock(staticRenderMutex);
+    if (!staticRenderQueue.empty()) {
+      staticRenderQueue.pop();
+      std::swap(currentSurface, backSurface);
+      renderInProgress = false;
+    }
+  }
+};
+
 class FractalApp : public ci::app::App {
 public:
-  FractalApp() : viewmanager() {}
+  FractalApp() : viewManager() {
+    texture =
+        ci::gl::Texture2d::create(defaultScreenWidth, defaultScreenHeight);
+  }
+
+  void setup() override {
+    params = {defaultConstantX,
+              defaultConstantY,
+              defaultOffsetX,
+              defaultOffsetY,
+              defaultScale,
+              defaultMaxIterations,
+              defaultEscapeRadiusSquared,
+              defaultSamplingCount};
+    ImGui::Initialize();
+  }
+
+  void update() override {
+    ImGui::Begin("Parameter Control");
+    ImGui::InputDouble("Constant X", &params.constantX, 0.01, 0.1, "%.6f");
+    ImGui::InputDouble("Constant Y", &params.constantY, 0.01, 0.1, "%.6f");
+    ImGui::InputDouble("Offset X", &params.offsetX, 0.1, 1.0, "%.3f");
+    ImGui::InputDouble("Offset Y", &params.offsetY, 0.1, 1.0, "%.3f");
+    ImGui::InputDouble("Scale", &params.scale, 0.01, 0.1, "%.4f");
+    ImGui::InputInt("Max Iterations", &params.maxIterations, 10, 100);
+    ImGui::InputInt("Escape Radius Squared", &params.escapeRadiusSquared, 1);
+    ImGui::InputInt("Sampling Count", &params.samplingCount, 1);
+    ImGui::End();
+
+    viewManager.requestStaticRender(params);
+    viewManager.update();
+    texture->update(viewManager.currentSurface);
+  }
+
+  void draw() override {
+    ci::gl::clear(ci::Color(0, 0, 0));
+    ci::gl::draw(texture);
+  }
 
 private:
-  ViewManager viewmanager;
+  ViewManager viewManager;
+  RenderParameters params;
+  ci::gl::Texture2dRef texture;
 };
 
 void prepareSettings(FractalApp::Settings *settings) {
@@ -225,4 +314,3 @@ void prepareSettings(FractalApp::Settings *settings) {
 }
 
 CINDER_APP(FractalApp, ci::app::RendererGl, prepareSettings)
-*/
