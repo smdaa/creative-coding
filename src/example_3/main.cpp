@@ -3,8 +3,13 @@
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <future>
 #include <immintrin.h>
+#include <mutex>
 #include <queue>
+#include <thread>
 
 constexpr int defaultScreenWidth = 1920;
 constexpr int defaultScreenHeight = 1080;
@@ -17,6 +22,8 @@ constexpr double defaultScale = 1.0;
 constexpr int defaultMaxIterations = 1000;
 constexpr int defaultEscapeRadiusSquared = 4;
 constexpr int defaultSamplingCount = 4;
+
+constexpr double defaultZoomFactor = 1.1;
 
 struct RenderParameters {
   double constantX;
@@ -146,6 +153,13 @@ void renderJulia(ci::Surface32f *surface, const RenderParameters params) {
   }
 }
 
+struct RenderRequest {
+  ci::Surface32f *surface;
+  RenderParameters params;
+  std::shared_ptr<std::promise<RenderRequest>>
+      promise; // Promise to set the result
+};
+
 class Renderer {
 public:
   Renderer() : running(true) {
@@ -160,33 +174,31 @@ public:
     };
   }
 
-  void requestRender(ci::Surface32f *surface, const RenderParameters &params,
-                     std::function<void()> callback) {
+  std::future<RenderRequest> requestRender(ci::Surface32f *surface,
+                                           const RenderParameters &params) {
+    auto promise = std::make_shared<std::promise<RenderRequest>>();
+    auto future = promise->get_future();
+
     {
-      std::lock_guard<std::mutex> lock(m);
-      requests.push({surface, params, callback});
+      std::lock_guard<std::mutex> lock(mtx);
+      requests.push({surface, params, promise}); // Store promise in the request
     }
     cv.notify_one();
+    return future;
   }
 
 private:
-  struct RenderRequest {
-    ci::Surface32f *surface;
-    RenderParameters params;
-    std::function<void()> callback;
-  };
-
   std::thread renderThread;
   std::atomic<bool> running;
   std::queue<RenderRequest> requests;
-  std::mutex m;
+  std::mutex mtx;
   std::condition_variable cv;
 
   void run() {
     while (running) {
       RenderRequest request;
       {
-        std::unique_lock<std::mutex> lock(m);
+        std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [this] { return !requests.empty() || !running; });
         if (!running && requests.empty()) {
           return;
@@ -195,79 +207,14 @@ private:
         requests.pop();
       }
       renderJulia(request.surface, request.params);
-      if (request.callback) {
-        request.callback();
-      }
-    }
-  }
-};
-
-class ViewManager {
-public:
-  ci::Surface32f currentSurface;
-
-  ViewManager()
-      : screenWidth(defaultScreenWidth), screenHeight(defaultScreenHeight),
-        renderInProgress(false), renderer() {
-    currentSurface = ci::Surface32f(screenWidth, screenHeight, false);
-    backSurface = ci::Surface32f(screenWidth, screenHeight, false);
-    currentCrop = ci::Area(0, 0, screenWidth, screenHeight);
-  }
-
-  void requestStaticRender(const RenderParameters &params) {
-    // If we have current params and they're the same as requested, no need to
-    // re-render
-    if (hasCurrentParams && currentParams == params) {
-      return;
-    }
-    // Ignore new requests while rendering
-    if (renderInProgress) {
-      return;
-    }
-    renderInProgress = true;
-    currentParams = params;
-    hasCurrentParams = true;
-    auto callback = [this]() {
-      std::lock_guard<std::mutex> lock(staticRenderMutex);
-      staticRenderQueue.push(true);
-    };
-    renderer.requestRender(&backSurface, params, callback);
-  }
-
-  void update() { processStaticRenderQueue(); }
-
-private:
-  int screenWidth;
-  int screenHeight;
-  bool renderInProgress;
-  bool hasCurrentParams;
-  Renderer renderer;
-
-  ci::Area currentCrop;
-  ci::Surface32f backSurface;
-  RenderParameters currentParams;
-
-  std::mutex staticRenderMutex;
-  std::queue<bool> staticRenderQueue;
-
-  void processStaticRenderQueue() {
-    std::lock_guard<std::mutex> lock(staticRenderMutex);
-    if (!staticRenderQueue.empty()) {
-      staticRenderQueue.pop();
-      std::swap(currentSurface, backSurface);
-      renderInProgress = false;
+      request.promise->set_value(request);
     }
   }
 };
 
 class FractalApp : public ci::app::App {
 public:
-  FractalApp() : viewManager() {
-    texture =
-        ci::gl::Texture2d::create(defaultScreenWidth, defaultScreenHeight);
-  }
-
-  void setup() override {
+  FractalApp() {
     params = {defaultConstantX,
               defaultConstantY,
               defaultOffsetX,
@@ -276,24 +223,73 @@ public:
               defaultMaxIterations,
               defaultEscapeRadiusSquared,
               defaultSamplingCount};
-    ImGui::Initialize();
+
+    currentSurface =
+        ci::Surface32f(defaultScreenWidth, defaultScreenHeight, false);
+    backSurface =
+        ci::Surface32f(defaultScreenWidth, defaultScreenHeight, false);
+    texture =
+        ci::gl::Texture2d::create(defaultScreenWidth, defaultScreenHeight);
+    renderer = std::make_unique<Renderer>();
+    renderInProgress = false;
+    firstStaticRenderFlag = true;
+    isZooming = false;
+    firstZoomFlag = true;
   }
 
-  void update() override {
-    ImGui::Begin("Parameter Control");
-    ImGui::InputDouble("Constant X", &params.constantX, 0.01, 0.1, "%.6f");
-    ImGui::InputDouble("Constant Y", &params.constantY, 0.01, 0.1, "%.6f");
-    ImGui::InputDouble("Offset X", &params.offsetX, 0.1, 1.0, "%.3f");
-    ImGui::InputDouble("Offset Y", &params.offsetY, 0.1, 1.0, "%.3f");
-    ImGui::InputDouble("Scale", &params.scale, 0.01, 0.1, "%.4f");
-    ImGui::InputInt("Max Iterations", &params.maxIterations, 10, 100);
-    ImGui::InputInt("Escape Radius Squared", &params.escapeRadiusSquared, 1);
-    ImGui::InputInt("Sampling Count", &params.samplingCount, 1);
-    ImGui::End();
+  void setup() override { ImGui::Initialize(); }
 
-    viewManager.requestStaticRender(params);
-    viewManager.update();
-    texture->update(viewManager.currentSurface);
+  void update() override {
+
+    if (!isZooming) {
+      bool parametersChanged = false;
+      ImGui::Begin("Parameter Control");
+      parametersChanged |= ImGui::InputDouble("Constant X", &params.constantX,
+                                              0.01, 0.1, "%.6f");
+      parametersChanged |= ImGui::InputDouble("Constant Y", &params.constantY,
+                                              0.01, 0.1, "%.6f");
+      parametersChanged |=
+          ImGui::InputDouble("Offset X", &params.offsetX, 0.1, 1.0, "%.3f");
+      parametersChanged |=
+          ImGui::InputDouble("Offset Y", &params.offsetY, 0.1, 1.0, "%.3f");
+      parametersChanged |=
+          ImGui::InputDouble("Scale", &params.scale, 0.01, 0.1, "%.4f");
+      parametersChanged |=
+          ImGui::InputInt("Max Iterations", &params.maxIterations, 10, 100);
+      parametersChanged |= ImGui::InputInt("Escape Radius Squared",
+                                           &params.escapeRadiusSquared, 1);
+      parametersChanged |=
+          ImGui::InputInt("Sampling Count", &params.samplingCount, 1);
+      ImGui::End();
+      if (parametersChanged || firstStaticRenderFlag) {
+        renderInProgress = true;
+        firstStaticRenderFlag = false;
+        clearSurface(currentSurface, ci::Color(0, 0, 0));
+        clearSurface(backSurface, ci::Color(0, 0, 0));
+        renderFuture = renderer->requestRender(&backSurface, params);
+      }
+      if (renderInProgress) {
+        if (renderFuture.wait_for(std::chrono::milliseconds(0)) ==
+            std::future_status::ready) {
+          renderInProgress = false;
+          std::swap(backSurface, currentSurface);
+        }
+      }
+      texture->update(currentSurface);
+
+    } else {
+
+      if (firstZoomFlag) {
+        renderInProgress = true;
+        firstStaticRenderFlag = false;
+        clearSurface(currentSurface, ci::Color(0, 0, 0));
+        clearSurface(backSurface, ci::Color(0, 0, 0));
+        renderFuture = renderer->requestRender(&backSurface, params);
+      }
+
+      if (renderInProgress) {
+      }
+    }
   }
 
   void draw() override {
@@ -301,10 +297,41 @@ public:
     ci::gl::draw(texture);
   }
 
+  void keyDown(ci::app::KeyEvent event) override {
+    char key = event.getChar();
+    if (key == 'q' || key == 'Q') {
+      quit();
+    } else if (event.getCode() == ci::app::KeyEvent::KEY_SPACE) {
+      isZooming = !isZooming;
+      firstZoomFlag = true;
+      firstStaticRenderFlag = true;
+    }
+  }
+
 private:
-  ViewManager viewManager;
   RenderParameters params;
+  ci::Surface32f currentSurface;
+  ci::Surface32f backSurface;
   ci::gl::Texture2dRef texture;
+  std::unique_ptr<Renderer> renderer;
+  bool renderInProgress;
+  bool firstStaticRenderFlag;
+  std::future<RenderRequest> renderFuture;
+
+  bool isZooming;
+  bool firstZoomFlag;
+  ci::Timer zoomTimer;
+
+  void clearSurface(ci::Surface32f &surface, const ci::Color &color) {
+    int width = surface.getWidth();
+    int height = surface.getHeight();
+
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        surface.setPixel(ci::ivec2(x, y), color);
+      }
+    }
+  }
 };
 
 void prepareSettings(FractalApp::Settings *settings) {
