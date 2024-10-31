@@ -3,12 +3,8 @@
 #include "cinder/app/RendererGl.h"
 #include "cinder/gl/gl.h"
 
-#include <atomic>
-#include <condition_variable>
 #include <immintrin.h>
-#include <mutex>
 #include <queue>
-#include <thread>
 
 constexpr int defaultScreenWidth = 500;
 constexpr int defaultScreenHeight = 500;
@@ -21,8 +17,7 @@ constexpr double defaultScale = 1.0;
 constexpr int defaultMaxIterations = 200;
 constexpr int defaultEscapeRadiusSquared = 4;
 constexpr int defaultSamplingCount = 2;
-
-constexpr double defaultZoomFactor = 1.1;
+constexpr double defaultZoomFactor = 1.5;
 
 struct RenderParameters {
   double constantX;
@@ -211,123 +206,131 @@ private:
 class FractalApp : public ci::app::App {
 public:
   FractalApp() {
-    params = {defaultConstantX,
-              defaultConstantY,
-              defaultOffsetX,
-              defaultOffsetY,
-              defaultScale,
-              defaultMaxIterations,
-              defaultEscapeRadiusSquared,
-              defaultSamplingCount};
+    currentParams = {defaultConstantX,
+                     defaultConstantY,
+                     defaultOffsetX,
+                     defaultOffsetY,
+                     defaultScale,
+                     defaultMaxIterations,
+                     defaultEscapeRadiusSquared,
+                     defaultSamplingCount};
+    backParams = {defaultConstantX,
+                  defaultConstantY,
+                  defaultOffsetX,
+                  defaultOffsetY,
+                  defaultScale,
+                  defaultMaxIterations,
+                  defaultEscapeRadiusSquared,
+                  defaultSamplingCount};
 
     currentSurface =
         ci::Surface32f(defaultScreenWidth, defaultScreenHeight, false);
     backSurface =
         ci::Surface32f(defaultScreenWidth, defaultScreenHeight, false);
+
     texture =
         ci::gl::Texture2d::create(defaultScreenWidth, defaultScreenHeight);
     renderer = std::make_unique<Renderer>();
+
     renderInProgress = false;
     firstStaticRenderFlag = true;
 
     isZooming = false;
-    zoomFactor = 1.1;
-    firstZoomRenderStart = true;
+    zoomFactor = defaultZoomFactor;
+    firstZoomRenderFlag = true;
     firstZoomRenderDone = false;
-    currentDisplayedScale = params.scale;
+    currentDisplayedScale = currentParams.scale;
   }
 
   void setup() override { ImGui::Initialize(); }
 
   void update() override {
 
-    bool parametersChanged = false;
-    ImGui::Begin("Parameter Control");
-    parametersChanged |=
-        ImGui::InputDouble("Constant X", &params.constantX, 0.01, 0.1, "%.6f");
-    parametersChanged |=
-        ImGui::InputDouble("Constant Y", &params.constantY, 0.01, 0.1, "%.6f");
-    parametersChanged |=
-        ImGui::InputDouble("Offset X", &params.offsetX, 0.1, 1.0, "%.3f");
-    parametersChanged |=
-        ImGui::InputDouble("Offset Y", &params.offsetY, 0.1, 1.0, "%.3f");
-    parametersChanged |=
-        ImGui::InputDouble("Scale", &params.scale, 0.01, 0.1, "%.4f");
-    parametersChanged |=
-        ImGui::InputInt("Max Iterations", &params.maxIterations, 10, 100);
-    parametersChanged |= ImGui::InputInt("Escape Radius Squared",
-                                         &params.escapeRadiusSquared, 1);
-    parametersChanged |=
-        ImGui::InputInt("Sampling Count", &params.samplingCount, 1);
-    ImGui::End();
-
     if (isZooming) {
-      // Initiate the first render for zooming if this is the start
-      if (firstZoomRenderStart) {
+      if (firstZoomRenderFlag) {
+        // Initiate the Zoom, we will prepare the two surfaces.
         clearSurface(currentSurface, ci::Color(0, 0, 0));
         clearSurface(backSurface, ci::Color(0, 0, 0));
+        texture->update(currentSurface);
 
         renderInProgress = true;
-        firstZoomRenderStart = false;
-
-        renderer->requestRender(&backSurface, params, [this]() {
-          renderInProgress = false;
-          firstZoomRenderDone = true;
-          std::swap(backSurface, currentSurface);
-          zoomTimer.start();
+        firstZoomRenderFlag = false;
+        renderer->requestRender(&currentSurface, currentParams, [this]() {
+          backParams = currentParams;
+          backParams.scale = currentParams.scale * zoomFactor;
+          renderer->requestRender(&backSurface, backParams, [this]() {
+            renderInProgress = false;
+            firstZoomRenderDone = true;
+            zoomTimer.start();
+          });
         });
       }
 
-      // Adjust scale and request new renders after the first frame is ready
       if (firstZoomRenderDone) {
-        std::cout << "OK firstZoomRenderDone" << std::endl;
-        std::cout << currentDisplayedScale << std::endl;
+        // Adjust scale and request new renders after the first frame is ready
+        currentDisplayedScale =
+            currentParams.scale *
+            std::exp(zoomTimer.getSeconds() * std::log(zoomFactor));
 
-        currentDisplayedScale = params.scale * std::exp(zoomTimer.getSeconds() *
-                                                        std::log(zoomFactor));
-
-        // Only start a new render if the current displayed scale exceeds the
-        // zoom factor
-        if ((currentDisplayedScale / params.scale) >= zoomFactor &&
+        if ((currentDisplayedScale / currentParams.scale) >= zoomFactor &&
             !renderInProgress) {
-          params.scale = currentDisplayedScale;
 
-          std::cout << params.scale << std::endl;
+          std::swap(backSurface, currentSurface);
+          std::swap(backParams, currentParams);
 
+          backParams.scale = currentParams.scale * zoomFactor;
           renderInProgress = true;
-
-          renderer->requestRender(&backSurface, params, [this]() {
-            renderInProgress = false;
-            std::swap(backSurface,
-                      currentSurface); // Swap the surfaces after render
-          });
-
           zoomTimer.start();
+          renderer->requestRender(&backSurface, backParams,
+                                  [this]() { renderInProgress = false; });
         }
+        texture->update(currentSurface);
       }
 
     } else {
+      // Parameter changes allowed in static mode.
+      bool parametersChanged = false;
+      ImGui::Begin("Parameter Control");
+      parametersChanged |= ImGui::InputDouble(
+          "Constant X", &currentParams.constantX, 0.01, 0.1, "%.6f");
+      parametersChanged |= ImGui::InputDouble(
+          "Constant Y", &currentParams.constantY, 0.01, 0.1, "%.6f");
+      parametersChanged |= ImGui::InputDouble(
+          "Offset X", &currentParams.offsetX, 0.1, 1.0, "%.3f");
+      parametersChanged |= ImGui::InputDouble(
+          "Offset Y", &currentParams.offsetY, 0.1, 1.0, "%.3f");
+      parametersChanged |=
+          ImGui::InputDouble("Scale", &currentParams.scale, 0.01, 0.1, "%.4f");
+      parametersChanged |= ImGui::InputInt(
+          "Max Iterations", &currentParams.maxIterations, 10, 100);
+      parametersChanged |= ImGui::InputInt(
+          "Escape Radius Squared", &currentParams.escapeRadiusSquared, 1);
+      parametersChanged |=
+          ImGui::InputInt("Sampling Count", &currentParams.samplingCount, 1);
+      ImGui::End();
+
       if ((parametersChanged || firstStaticRenderFlag) && !renderInProgress) {
-        renderInProgress = true;
+        if (firstStaticRenderFlag) {
+          clearSurface(currentSurface, ci::Color(0, 0, 0));
+          clearSurface(backSurface, ci::Color(0, 0, 0));
+          texture->update(currentSurface);
+        }
         firstStaticRenderFlag = false;
-        renderer->requestRender(&backSurface, params, [this]() {
+        renderInProgress = true;
+        renderer->requestRender(&backSurface, currentParams, [this]() {
           renderInProgress = false;
           std::swap(backSurface, currentSurface);
         });
       }
+      texture->update(currentSurface);
     }
-
-    texture->update(currentSurface);
   }
 
   void draw() override {
     ci::gl::clear(ci::Color(0, 0, 0));
-
     if (isZooming && firstZoomRenderDone) {
-
       ci::vec2 center(defaultScreenWidth * 0.5f, defaultScreenHeight * 0.5f);
-      float zoomLevel = currentDisplayedScale / params.scale;
-
+      float zoomLevel = currentDisplayedScale / currentParams.scale;
       ci::gl::pushModelMatrix();
       ci::gl::translate(center);
       ci::gl::scale(ci::vec2(zoomLevel));
@@ -346,23 +349,29 @@ public:
     if (key == 'q' || key == 'Q') {
       quit();
     } else if (event.getCode() == ci::app::KeyEvent::KEY_SPACE) {
+      if (isZooming) {
+        firstStaticRenderFlag = true;
+        currentParams.scale = currentDisplayedScale;
+      } else {
+        firstZoomRenderFlag = true;
+        firstZoomRenderDone = false;
+      }
       isZooming = !isZooming;
-      firstZoomRenderStart = true;
     }
   }
 
 private:
-  RenderParameters params;
+  RenderParameters currentParams;
+  RenderParameters backParams;
   ci::Surface32f currentSurface;
   ci::Surface32f backSurface;
   ci::gl::Texture2dRef texture;
   std::unique_ptr<Renderer> renderer;
   bool renderInProgress;
   bool firstStaticRenderFlag;
-
   bool isZooming;
   double zoomFactor;
-  bool firstZoomRenderStart;
+  bool firstZoomRenderFlag;
   bool firstZoomRenderDone;
   double currentDisplayedScale;
   ci::Timer zoomTimer;
