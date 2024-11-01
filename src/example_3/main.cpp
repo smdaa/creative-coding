@@ -5,7 +5,6 @@
 
 #include <immintrin.h>
 #include <omp.h>
-#include <optional>
 #include <queue>
 
 constexpr int defaultScreenWidth = 1000;
