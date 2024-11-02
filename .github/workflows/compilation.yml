@@ -12,11 +12,11 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
-    # Install dependencies
+    # Update and Install Dependencies
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libxcursor-dev \
+        sudo apt-get install -y libunwind-dev libxcursor-dev \
           libxrandr-dev \
           libxinerama-dev \
           libxi-dev \
